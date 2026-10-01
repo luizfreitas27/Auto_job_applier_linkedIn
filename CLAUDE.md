@@ -111,9 +111,11 @@ Select and radio branches call `option_from_memory_or_ai()` only when there is n
 answer (`not answer`): memory text snapped to this form's options via
 `match_answer_to_option`, then the AI shown the non-placeholder options, accepted only
 verbatim. Both fallbacks share `ask_ai()`. Checkboxes tick only from an `approved` entry; an
-unrecognised unticked box is remembered as pending with source `form`. The "Help Needed"
-pause snapshots the form with `read_form_state()` before and after the dialog and
-`capture_manual_answers()` remembers what the user filled in as approved (source `user`). The module itself knows nothing
+unrecognised unticked box is remembered as pending with source `form`. `pause_for_help()` is the
+"Help Needed" pause: it snapshots the form with `read_form_state()` before and after the
+dialog and `capture_manual_answers()` remembers what the user filled in as approved (source
+`user`). Form locators and title readers (`form_question_xpath`, `select_title`,
+`radio_title`, `text_title`, `textarea_title`, `checkbox_key`) are shared by both. The module itself knows nothing
 about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
 with `monkeypatch.setattr(bot, "answers_memory", ...)`.
 

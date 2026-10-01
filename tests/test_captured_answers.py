@@ -1,7 +1,7 @@
 '''
 Captured answers: what the user types into the form during a "Help Needed" pause becomes an
-approved remembered answer. Driven through `read_form_state` + `capture_manual_answers` with
-a fake modal whose controls change between the two snapshots.
+approved remembered answer. Driven through `pause_for_help` (with a dialog stub that fills
+the fake form while it is "open") and through `read_form_state` + `capture_manual_answers`.
 
 License: MIT  (https://opensource.org/license/mit)
 '''
@@ -9,7 +9,8 @@ License: MIT  (https://opensource.org/license/mit)
 import pytest
 
 from modules.answers_memory import AnswerMemory
-from tests.fakes import (FakeElement, FakeSelect, FakeRadio, FakeCheckbox, import_bot, modal_with)
+from tests.fakes import (FakeElement, import_bot, modal_with, text_question, select_question,
+                         radio_question, checkbox_block)
 
 
 @pytest.fixture(scope="module")
@@ -23,47 +24,15 @@ def memory(bot, tmp_path, monkeypatch):
     fresh = AnswerMemory(tmp_path / "answers_memory.json")
     monkeypatch.setattr(bot, "answers_memory", fresh)
     monkeypatch.setattr(bot, "print_lg", lambda *a, **k: None)
+    monkeypatch.setattr(bot, "screenshot", lambda *a, **k: "shot.png")
     return fresh
 
 
 JOB = "https://www.linkedin.com/jobs/view/555"
 
 
-def text_question(label, value=""):
-    control = FakeElement(value=value)
-    return FakeElement(children={".//input[@type='text']": control, ".//label[@for]": FakeElement(text=label)}), control
-
-
 def textarea_question(label, value=""):
-    control = FakeElement(value=value)
-    return FakeElement(children={".//textarea": control, ".//label[@for]": FakeElement(text=label)}), control
-
-
-def select_question(bot, monkeypatch, label, options, selected="Select an option"):
-    fake_select = FakeSelect(options, selected=selected)
-    monkeypatch.setattr(bot, "Select", lambda element: fake_select)
-    question = FakeElement(children={".//select": FakeElement(),
-                                     "label": FakeElement(children={"span": FakeElement(text=label)})})
-    return question, fake_select
-
-
-def radio_question(label, option_labels):
-    options = [FakeRadio(f"opt{i}", text) for i, text in enumerate(option_labels)]
-    children = {'.//span[@data-test-form-builder-radio-button-form-component__title]':
-                    FakeElement(children={"visually-hidden": FakeElement(text=label)}),
-                'input': options}
-    for option in options:
-        children[f'.//label[@for="{option.id}"]'] = FakeElement(text=option.label)
-    fieldset = FakeElement(children=children)
-    return FakeElement(children={'.//fieldset[@data-test-form-builder-radio-button-form-component="true"]': fieldset}), options
-
-
-def checkbox_question(visible, hidden=None):
-    box = FakeCheckbox()
-    children = {".//input[@type='checkbox']": box, ".//label[@for]": FakeElement(text=visible)}
-    if hidden is not None:
-        children[".//span[@class='visually-hidden']"] = FakeElement(text=hidden)
-    return FakeElement(children=children), box
+    return text_question(label, value=value, kind="textarea")
 
 
 # ------------------------------------ read_form_state ------------------------
@@ -78,7 +47,7 @@ def test_read_form_state_reads_values_and_the_selected_radio_label(bot, monkeypa
     text, _ = text_question("Favourite language", value="Go")
     radio, options = radio_question("Driver's licence?", ["Yes", "No"])
     options[1].selected = True
-    checkbox, box = checkbox_question("Subscribe to alerts")
+    checkbox, box = checkbox_block("Subscribe to alerts")
     box.selected = True
     modal = FakeElement(children={".//div[@data-test-form-element]": [text, radio, checkbox]})
     assert bot.read_form_state(modal) == {
@@ -127,7 +96,7 @@ def test_a_radio_choice_is_captured_as_its_label(bot, memory, monkeypatch):
 
 
 def test_a_checkbox_ticked_during_the_pause_is_captured_as_checked(bot, memory, monkeypatch):
-    checkbox, box = checkbox_question("Subscribe to alerts", hidden="Notifications")
+    checkbox, box = checkbox_block("Subscribe to alerts", hidden_label="Notifications")
     modal = modal_with(checkbox)
     before = bot.read_form_state(modal)
     box.selected = True
@@ -173,9 +142,11 @@ def test_a_sensitive_answer_typed_during_the_pause_is_not_captured(bot, memory, 
     assert memory.entries == []
 
 
-def test_a_pending_ai_answer_corrected_by_hand_becomes_the_approved_one(bot, memory, monkeypatch):
+def test_filling_an_empty_field_that_has_a_pending_memory_entry_approves_the_typed_answer(bot, memory, monkeypatch):
+    '''The stale pending entry (the AI's) gives way to what the user typed. A field the bot had
+    already filled is never captured, so correcting a bot answer in place is out of scope.'''
     memory.remember("Favourite language", "text", "Python", source="ai")
-    text, control = text_question("Favourite language")       # the user cleared and retyped it
+    text, control = text_question("Favourite language")
     modal = modal_with(text)
     before = bot.read_form_state(modal)
     control.value = "Go"
@@ -186,13 +157,54 @@ def test_a_pending_ai_answer_corrected_by_hand_becomes_the_approved_one(bot, mem
     assert found.answer == "Go" and found.state == "approved" and len(memory.entries) == 1
 
 
-def test_the_help_needed_pause_captures_between_its_two_snapshots(bot):
-    '''
-    The wiring, read from the source of the Easy Apply loop: snapshot, show the dialog,
-    snapshot again, capture the difference. The loop itself needs a live modal to run.
-    '''
-    import inspect
-    source = inspect.getsource(bot.apply_to_jobs)
-    assert "formBefore = read_form_state(modal)" in source
-    assert "capture_manual_answers(formBefore, read_form_state(modal), job_link)" in source
-    assert source.index("formBefore = read_form_state(modal)") < source.index('"Help Needed"') < source.index("capture_manual_answers(")
+def test_the_pause_captures_what_was_filled_while_the_dialog_was_open(bot, memory, monkeypatch):
+    '''The real wiring: snapshot, dialog, snapshot, capture. The dialog stub plays the user.'''
+    question, control = text_question("Favourite language")
+    modal = modal_with(question)
+    shown = []
+
+    def user_fills_the_form(text, title, button="OK"):
+        shown.append(title)
+        control.value = "Go"
+        return button
+    monkeypatch.setattr(bot.dialogs, "alert", user_fills_the_form)
+
+    assert bot.pause_for_help(modal, "job-1", JOB) == 1
+    assert shown == ["Help Needed"]
+    assert memory.lookup("Favourite language", "text")[0].answer == "Go"
+
+
+def test_controls_that_appear_only_after_the_pause_are_not_captured(bot, memory, monkeypatch):
+    '''The user clicked Next despite the warning: the new page's LinkedIn prefills are not their answers.'''
+    first, _ = text_question("Favourite language")
+    modal = modal_with(first)
+    before = bot.read_form_state(modal)
+    prefilled, _ = text_question("Mobile phone number", value="5550001234")
+    after = bot.read_form_state(modal_with(prefilled))
+
+    assert bot.capture_manual_answers(before, after, JOB) == 0
+    assert memory.entries == []
+
+
+def test_whitespace_only_input_is_not_an_answer(bot, memory, monkeypatch):
+    question, control = text_question("Favourite language")
+    modal = modal_with(question)
+    before = bot.read_form_state(modal)
+    control.value = "   "
+    assert bot.capture_manual_answers(before, bot.read_form_state(modal), JOB) == 0
+
+
+def test_a_form_that_cannot_be_re_read_captures_nothing_and_does_not_raise(bot, memory, monkeypatch):
+    question, _ = text_question("Favourite language")
+    modal = modal_with(question)
+    reads = []
+
+    def flaky_read(target):
+        reads.append(target)
+        if len(reads) == 2:
+            raise RuntimeError("stale element reference")
+        return {}
+    monkeypatch.setattr(bot, "read_form_state", flaky_read)
+    monkeypatch.setattr(bot.dialogs, "alert", lambda *a, **k: "Continue")
+
+    assert bot.pause_for_help(modal, "job-1", JOB) == 0
