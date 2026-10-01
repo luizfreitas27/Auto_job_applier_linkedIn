@@ -107,10 +107,11 @@ unrecognised question: normalised label + control kind → answer, source (`ai`/
 fallback the form branches call after the configured-answer heuristics fail: sensitive check
 (`is_sensitive_question`, whole-word on `sensitive_terms`) → memory lookup (exact, then
 `difflib` ≥ 0.92 within the same kind, logged) → AI, whose answer is remembered as pending.
-Select and radio branches call `remembered_option()` only when the question is unrecognised
-(`answer is None`), snapping the remembered text to this form's options via
-`match_answer_to_option`. Checkboxes tick only from an `approved` entry; an unrecognised
-unticked box is remembered as pending with source `form`. The module itself knows nothing
+Select and radio branches call `option_from_memory_or_ai()` only when there is no configured
+answer (`not answer`): memory text snapped to this form's options via
+`match_answer_to_option`, then the AI shown the non-placeholder options, accepted only
+verbatim. Both fallbacks share `ask_ai()`. Checkboxes tick only from an `approved` entry; an
+unrecognised unticked box is remembered as pending with source `form`. The module itself knows nothing
 about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
 with `monkeypatch.setattr(bot, "answers_memory", ...)`.
 
@@ -120,6 +121,11 @@ Provider-agnostic via LangChain `init_chat_model` + a small LangGraph pipeline. 
 providers exist internally: `"gemini"` → `google_genai`, everything else (openai, deepseek,
 ollama, lm studio, vllm) → `openai` with `llm_api_url` as `base_url`. `extract_skills` uses
 structured output and falls back to plain JSON parsing. Prompts live in `prompts.py`.
+`answer_question(..., options=[...], question_type="single_select")` returns the option the
+model named exactly (case/quotes tolerated) or `""`; never a paraphrase. The applicant text
+the AI sees is `profile.build_candidate_profile()`, assembled from the config modules
+(never phone, street, zip, email, citizenship status or current salary) plus
+`user_information_all`.
 
 ### Logging
 

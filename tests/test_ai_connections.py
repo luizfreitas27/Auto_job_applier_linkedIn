@@ -93,18 +93,54 @@ def test_answer_question_text_returns_cleaned_answer():
     assert answer == "5"
 
 
-def test_answer_question_select_snaps_to_allowed_option():
-    client = C.AIClient(_StubModel("Yes, absolutely"))
-    answer = C.answer_question(client, "Authorized to work?", options=["Yes", "No"],
+@pytest.mark.parametrize("raw", ["Yes", "yes", " YES ", '"Yes"'])
+def test_answer_question_select_accepts_an_option_named_exactly(raw):
+    '''Case, whitespace and quotes are tolerated; the returned text is the option's own.'''
+    client = C.AIClient(_StubModel(raw))
+    answer = C.answer_question(client, "Willing to relocate?", options=["Yes", "No"],
                              question_type="single_select")
     assert answer == "Yes"
 
 
-def test_answer_question_select_passthrough_when_no_option_matches():
-    client = C.AIClient(_StubModel("Maybe later"))
-    answer = C.answer_question(client, "Pick one", options=["Alpha", "Beta"],
+@pytest.mark.parametrize("raw", ["Yes, absolutely", "Maybe later", "Y", ""])
+def test_answer_question_select_returns_empty_when_no_option_is_named(raw):
+    '''No substring guessing: a paraphrase is not a choice, and the control is left alone.'''
+    client = C.AIClient(_StubModel(raw))
+    answer = C.answer_question(client, "Willing to relocate?", options=["Yes", "No"],
                              question_type="single_select")
-    assert answer == "Maybe later"
+    assert answer == ""
+
+
+class _RecordingModel(_StubModel):
+    '''Keeps the prompt it was invoked with.'''
+    def __init__(self, output):
+        super().__init__(output)
+        self.prompts = []
+
+    def invoke(self, prompt):
+        self.prompts.append(prompt)
+        return super().invoke(prompt)
+
+
+def test_the_prompt_carries_the_candidate_profile_and_the_options():
+    model = _RecordingModel("Hybrid")
+    client = C.AIClient(model)
+    C.answer_question(client, "Preferred work style", options=["Remote", "Hybrid"],
+                      question_type="single_select", job_description="We ship daily.",
+                      user_information_all="Name: Jane Applicant\nYears of professional experience: 6")
+    prompt = model.prompts[0]
+    assert "Name: Jane Applicant" in prompt and "Years of professional experience: 6" in prompt
+    assert "Preferred work style" in prompt
+    assert "- Remote" in prompt and "- Hybrid" in prompt
+    assert "We ship daily." in prompt
+
+
+def test_a_rejected_paraphrase_is_logged_with_the_options(log_records):
+    client = C.AIClient(_StubModel("Yes, absolutely"))
+    assert C.answer_question(client, "Willing to relocate?", options=["Yes", "No"],
+                             question_type="single_select") == ""
+    warnings = [r.getMessage() for r in log_records if r.levelname == "WARNING"]
+    assert any("Yes, absolutely" in w and "Willing to relocate?" in w and "'Yes'" in w for w in warnings)
 
 
 def test_answer_question_none_client_is_safe():
