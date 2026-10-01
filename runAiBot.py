@@ -599,6 +599,77 @@ def option_from_memory_or_ai(label_org: str, kind: str, option_texts: list[str],
     return option_texts.index(answer)
 
 
+def read_form_state(modal: WebElement) -> dict[tuple[str, str], str | None]:
+    '''
+    What every question in the Easy Apply modal currently holds, keyed by (question title,
+    control kind): the selected option text, the typed text, or "checked" for a ticked
+    box; None when the control is empty or still on a placeholder. Same locators as
+    `answer_questions`, read-only, so two snapshots can be compared.
+    '''
+    state: dict[tuple[str, str], str | None] = {}
+    for Question in modal.find_elements(By.XPATH, ".//div[@data-test-form-element]"):
+        select = try_xp(Question, ".//select", False)
+        if select:
+            title = "Unknown"
+            try: title = Question.find_element(By.TAG_NAME, "label").find_element(By.TAG_NAME, "span").text
+            except Exception: pass
+            chosen = Select(select).first_selected_option.text
+            state[(title, "select")] = None if chosen in option_placeholders else chosen
+            continue
+        radio = try_xp(Question, './/fieldset[@data-test-form-builder-radio-button-form-component="true"]', False)
+        if radio:
+            label = try_xp(radio, './/span[@data-test-form-builder-radio-button-form-component__title]', False)
+            try: label = find_by_class(label, "visually-hidden", 2.0)
+            except Exception: pass
+            title = label.text if label else "Unknown"
+            chosen = None
+            for option in radio.find_elements(By.TAG_NAME, 'input'):
+                if option.is_selected():
+                    optionLabel = try_xp(radio, f'.//label[@for="{option.get_attribute("id")}"]', False)
+                    chosen = optionLabel.text if optionLabel else option.get_attribute("value")
+            state[(title, "radio")] = chosen or None
+            continue
+        text = try_xp(Question, ".//input[@type='text']", False)
+        if text:
+            label = try_xp(Question, ".//label[@for]", False)
+            try: label = label.find_element(By.CLASS_NAME, 'visually-hidden')
+            except Exception: pass
+            state[(label.text if label else "Unknown", "text")] = text.get_attribute("value") or None
+            continue
+        textArea = try_xp(Question, ".//textarea", False)
+        if textArea:
+            label = try_xp(Question, ".//label[@for]", False)
+            state[(label.text if label else "Unknown", "textarea")] = textArea.get_attribute("value") or None
+            continue
+        checkbox = try_xp(Question, ".//input[@type='checkbox']", False)
+        if checkbox:
+            if checkbox.get_attribute("id") == "follow-company-checkbox": continue
+            label = try_xp(Question, ".//span[@class='visually-hidden']", False)
+            title = label.text if label else "Unknown"
+            visible = try_xp(Question, ".//label[@for]", False)
+            visible = visible.text if visible else "Unknown"
+            key = " ".join(part for part in (title, visible) if part != "Unknown")
+            if key:
+                state[(key, "checkbox")] = "checked" if checkbox.is_selected() else None
+    return state
+
+
+def capture_manual_answers(before: dict, after: dict, job_link: str | None) -> int:
+    '''
+    Remember, as approved **captured answers**, every control the user filled in by hand
+    during a "Help Needed" pause: empty in `before`, holding a value in `after`. Sensitive
+    questions and controls with no title are skipped. Returns how many were captured.
+    '''
+    captured = 0
+    for (title, kind), value in after.items():
+        if not value or before.get((title, kind)) or title == "Unknown" or is_sensitive_question(title):
+            continue
+        answers_memory.remember(title, kind, value, source="user", job_link=job_link)
+        print_lg(f'Captured your answer to "{title}" ({kind}): "{value}". The bot will reuse it.')
+        captured += 1
+    return captured
+
+
 def match_answer_to_option(answer: str | None, option_texts: list[str]) -> int | None:
     '''
     Index of the option that honestly carries `answer`, else `None`. One mapper, called by
@@ -1471,7 +1542,11 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     if next_counter >= 15: 
                                         if pause_at_failed_question:
                                             screenshot(driver, job_id, "Needed manual intervention for failed question")
+                                            # Whatever the user fills in during the pause is theirs
+                                            # to keep: snapshot, ask, snapshot again, remember the diff.
+                                            formBefore = read_form_state(modal)
                                             dialogs.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
+                                            capture_manual_answers(formBefore, read_form_state(modal), job_link)
                                             next_counter = 1
                                             continue
                                         if questions_list: print_lg("Stuck for one or some of the following questions...", questions_list)
