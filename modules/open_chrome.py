@@ -30,6 +30,7 @@ from config.settings import run_in_background, auto_manage_driver, disable_exten
 from config.questions import default_resume_path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from modules.helpers import find_default_profile_directory, critical_error_log, logger, print_lg
@@ -42,17 +43,15 @@ def choose_profile_directory(isRetry: bool) -> str:
     `safe_mode` is off and one was found, else the bot's own throwaway profile. A retry
     after a failed launch always uses the throwaway profile.
     '''
-    profileDir = find_default_profile_directory()
-    if isRetry:
-        print_lg("Will login with a guest profile, browsing history will not be saved in the browser!")
-    elif profileDir and not safe_mode:
-        return profileDir
-    else:
-        print_lg("Logging in with a guest profile, Web history will not be saved!")
+    if not isRetry and not safe_mode:
+        profileDir = find_default_profile_directory()
+        if profileDir:
+            return profileDir
+    print_lg("Logging in with a guest profile, Web history will not be saved!")
     return get_default_temp_profile()
 
 
-def uc_driver_kwargs(profile_dir: str) -> dict:
+def uc_driver_kwargs(profile_dir: str) -> dict[str, object]:
     '''
     The arguments for `seleniumbase.Driver` in UC Mode. Kept as data so the launch can be
     tested without a browser. `headless2` is Chrome's new headless mode, the only one UC Mode
@@ -73,7 +72,7 @@ def plain_selenium_options(profile_dir: str) -> Options:
     return options
 
 
-def createChromeSession(isRetry: bool = False):
+def create_chrome_session(isRetry: bool = False) -> tuple[Options | None, WebDriver, ActionChains, WebDriverWait]:
     '''
     Launch Chrome and return (options, driver, actions, wait). `options` is None on the UC
     path: SeleniumBase builds its own and does not hand them back.
@@ -100,11 +99,11 @@ def createChromeSession(isRetry: bool = False):
 
 try:
     options, driver, actions, wait = None, None, None, None
-    options, driver, actions, wait = createChromeSession()
+    options, driver, actions, wait = create_chrome_session()
 except SessionNotCreatedException as e:
     # Recoverable: the guest-profile retry below usually succeeds, so this is not an ERROR.
     logger.warning("Failed to create Chrome Session, retrying with guest profile", exc_info=e)
-    options, driver, actions, wait = createChromeSession(True)
+    options, driver, actions, wait = create_chrome_session(True)
 except Exception as e:
     msg = 'Seems like Google Chrome is out dated. Update browser and try again! \n\n\nIf issue persists, try Safe Mode. Set, safe_mode = True in config.py \n\nPlease check GitHub discussions/support for solutions https://github.com/GodsScion/Auto_job_applier_linkedIn \n                                   OR \nReach out in discord ( https://discord.gg/fFp7uUzWCY )'
     if isinstance(e,TimeoutError): msg = "Couldn't download Chrome-driver. Set auto_manage_driver = False in config!"
@@ -112,5 +111,10 @@ except Exception as e:
     critical_error_log("In Opening Chrome", e)
     from modules.dialogs import alert
     alert(msg, "Error in opening chrome")
-    try: driver.quit()
-    except (NameError, AttributeError): exit()
+    # The browser could not be set up, so the bot cannot run: close whatever did open and
+    # end the program here rather than let runAiBot star-import a dead driver.
+    if driver is not None:
+        try: driver.quit()
+        except Exception: pass
+    import sys
+    sys.exit(1)

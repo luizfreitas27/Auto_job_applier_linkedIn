@@ -6,7 +6,6 @@ and the module is imported once.
 License: MIT  (https://opensource.org/license/mit)
 '''
 
-import sys
 from unittest import mock
 
 import pytest
@@ -30,28 +29,37 @@ class _FakeDriver:
         pass
 
 
+# The same four stubs are needed twice: on `modules.helpers` while the module imports (it
+# launches at import and binds these names by `from ... import`), and on the module itself
+# for every launch the tests trigger afterwards.
+_STUBS = {
+    "make_directories": lambda paths: None,
+    "get_default_temp_profile": lambda: "/tmp/not-a-real-profile",
+    "find_default_profile_directory": lambda: None,
+}
+
 with mock.patch.object(seleniumbase, "Driver", _FakeDriver), \
-     mock.patch.object(helpers, "make_directories", lambda paths: None), \
-     mock.patch.object(helpers, "get_default_temp_profile", lambda: "/tmp/not-a-real-profile"), \
-     mock.patch.object(helpers, "find_default_profile_directory", lambda: None):
+     mock.patch.multiple(helpers, **_STUBS):
     import modules.open_chrome as oc
+
+IMPORT_TIME_LAUNCHES = list(_FakeDriver.built)
 
 
 @pytest.fixture(autouse=True)
 def no_real_browser(monkeypatch):
-    '''Every launch in these tests goes to the fake driver, and the fake profile paths stay in place.'''
+    '''Every launch in these tests goes to a fresh fake driver record, with the fake profile paths in place.'''
     monkeypatch.setattr(seleniumbase, "Driver", _FakeDriver)
-    monkeypatch.setattr(oc, "make_directories", lambda paths: None)
-    monkeypatch.setattr(oc, "get_default_temp_profile", lambda: "/tmp/not-a-real-profile")
-    monkeypatch.setattr(oc, "find_default_profile_directory", lambda: None)
+    for name, fake in _STUBS.items():
+        monkeypatch.setattr(oc, name, fake)
     monkeypatch.setattr(oc, "print_lg", lambda *a, **k: None)
+    _FakeDriver.built.clear()
 
 
 # ------------------------------------ import-time launch ---------------------
 def test_importing_the_module_launched_uc_mode_once_with_the_throwaway_profile():
     '''safe_mode is True by default, so the bot's own profile is used, never the user's.'''
-    assert len(_FakeDriver.built) == 1
-    kwargs = _FakeDriver.built[0]
+    assert len(IMPORT_TIME_LAUNCHES) == 1
+    kwargs = IMPORT_TIME_LAUNCHES[0]
     assert kwargs["uc"] is True
     assert kwargs["user_data_dir"] == "/tmp/not-a-real-profile"
     assert kwargs["headless2"] is False
@@ -59,10 +67,12 @@ def test_importing_the_module_launched_uc_mode_once_with_the_throwaway_profile()
     assert oc.options is None                           # SeleniumBase keeps its own options
 
 
-def test_the_old_shim_is_gone():
+def test_the_old_shim_and_its_dependency_are_gone():
     assert not hasattr(oc, "get_managed_driver_path")
     assert not hasattr(oc, "_adhoc_sign")
-    assert "undetected_chromedriver" not in sys.modules or True   # it may be absent entirely
+    import pathlib
+    source = pathlib.Path(oc.__file__).read_text(encoding="utf-8")
+    assert "undetected_chromedriver" not in source
 
 
 # ------------------------------------ the kwargs seam ------------------------
@@ -80,15 +90,14 @@ def test_uc_kwargs_use_only_arguments_seleniumbase_accepts():
 
 def test_headless_is_the_new_mode_and_warns_about_detection(monkeypatch, log_records):
     monkeypatch.setattr(oc, "run_in_background", True)
-    _FakeDriver.built.clear()
-    oc.createChromeSession()
+    oc.create_chrome_session()
     assert _FakeDriver.built[0]["headless2"] is True
     assert any("easier for LinkedIn to detect" in r.getMessage() for r in log_records if r.levelname == "WARNING")
 
 
 def test_a_visible_window_does_not_warn(monkeypatch, log_records):
     monkeypatch.setattr(oc, "run_in_background", False)
-    oc.createChromeSession()
+    oc.create_chrome_session()
     assert not any("easier for LinkedIn to detect" in r.getMessage() for r in log_records)
 
 
@@ -121,9 +130,8 @@ def test_plain_selenium_path_builds_chrome_options_and_warns(monkeypatch, log_re
         def maximize_window(self):
             pass
     monkeypatch.setattr(oc.webdriver, "Chrome", _FakeChrome)
-    _FakeDriver.built.clear()
 
-    options, driver, actions, wait = oc.createChromeSession()
+    options, driver, actions, wait = oc.create_chrome_session()
 
     assert _FakeDriver.built == []                      # SeleniumBase was not used
     assert isinstance(driver, _FakeChrome) and options is built[0]
