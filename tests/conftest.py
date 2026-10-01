@@ -40,6 +40,21 @@ def log_records():
     logger.setLevel(previous_level)
 
 
+@pytest.fixture(autouse=True)
+def no_developer_secrets(monkeypatch, tmp_path):
+    '''
+    The developer's own `.env` and environment must never reach the tests: with a real
+    TELEGRAM_BOT_TOKEN set, every test that saves that field through the panel gets a 403
+    "locked" answer. Point the override loader at an empty file and clear the variables.
+    Tests that need a `.env` set their own path on top of this.
+    '''
+    from config import _overrides
+    monkeypatch.setattr(_overrides, "ENV_FILE_PATH", str(tmp_path / "no.env"))
+    for names in _overrides.SECRET_ENV_NAMES.values():
+        for envName in names.values():
+            monkeypatch.delenv(envName, raising=False)
+
+
 @pytest.fixture
 def client():
     '''Flask test client for the local control panel (app.py).'''
