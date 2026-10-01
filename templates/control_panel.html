@@ -296,10 +296,22 @@
         }
 
         // ---- rendering ----
+        // Must match SECRET_MASK in app.py. The server never returns a saved
+        // secret in clear text; it sends this instead, and sending it back on
+        // save means "keep what is stored".
+        var SECRET_MASK = '********';
+        // Must match PANEL_HEADER / PANEL_HEADER_VALUE in app.py. Every
+        // state-changing request carries it; the server rejects any that does
+        // not, which is what keeps other web pages from driving this panel.
+        var PANEL_HEADERS = { 'X-Requested-With': 'control-panel' };
+
         function makePasswordControl(id, value) {
             var wrap = el('div', { class: 'pw-wrap' });
             var input = el('input', { type: 'password', id: id });
             input.value = value;
+            if (value === SECRET_MASK) {
+                input.title = 'A value is saved. It is never shown here; type a new one to replace it, or clear the field to remove it.';
+            }
             var btn = el('button', { type: 'button', class: 'pw-eye', 'aria-label': 'Show password', html: EYE_SVG });
             btn.addEventListener('click', function () {
                 if (input.disabled) return;
@@ -582,13 +594,13 @@
             var pane = document.getElementById('logPane');
             pane.textContent = '';
             logOffset = 0;
-            fetch('/api/run', { method: 'POST' }).then(function (r) { return r.json(); })
+            fetch('/api/run', { method: 'POST', headers: PANEL_HEADERS }).then(function (r) { return r.json(); })
                 .then(function (s) { setRunningUI(s.running, s.pid); refreshLogs(); })
                 .catch(function () {});
         }
 
         function stopBot() {
-            fetch('/api/stop', { method: 'POST' }).then(function (r) { return r.json(); })
+            fetch('/api/stop', { method: 'POST', headers: PANEL_HEADERS }).then(function (r) { return r.json(); })
                 .then(function (s) { setRunningUI(s.running, s.pid); })
                 .catch(function () {});
         }
@@ -710,7 +722,7 @@
             msg.textContent = 'Saving...';
             fetch('/api/config', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS),
                 body: JSON.stringify(payload)
             }).then(function (r) {
                 return r.json().then(function (body) { return { ok: r.ok, body: body }; });

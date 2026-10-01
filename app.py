@@ -16,11 +16,13 @@ IMPORTANT - how configuration works:
     user_config.json present the tool behaves exactly as it always has.
 
 SECURITY: this app handles LinkedIn credentials, so it binds to 127.0.0.1 only
-(never 0.0.0.0) and runs with debug OFF. Do not change these.
+(never 0.0.0.0), runs with debug OFF, sends no CORS headers, masks every
+password-type value it returns, and rejects state-changing requests that do not
+carry the control-panel header (see `_reject_cross_site_requests`). Do not
+change these: any web page open in the same browser can reach 127.0.0.1.
 '''
 
-from flask import Flask, request, jsonify, render_template
-from flask_cors import CORS
+from flask import Flask, request, jsonify, render_template, abort
 import csv
 from datetime import datetime
 import os
@@ -37,7 +39,49 @@ from config import _overrides
 from modules import updater
 
 app = Flask(__name__)
-CORS(app)
+
+
+# ===========================================================================
+# Browser-side hardening
+#
+# A web page open in the same browser can send requests to 127.0.0.1. Three
+# rules close that off without changing how the panel itself works:
+#   * No CORS headers are ever sent, so a cross-origin fetch() cannot READ a
+#     response (never add flask-cors back).
+#   * Every state-changing request (POST/PUT) must carry a custom header. A
+#     cross-origin request with a custom header needs a CORS preflight, which
+#     fails here, so another page cannot even SEND one. Plain <form> posts have
+#     no way to add the header either.
+#   * The Host header must be a loopback name, which stops DNS rebinding from
+#     dressing an attacker's hostname up as this server.
+# ===========================================================================
+PANEL_HEADER = "X-Requested-With"
+PANEL_HEADER_VALUE = "control-panel"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def _host_is_loopback(host: str) -> bool:
+    '''True for "127.0.0.1", "localhost" or "[::1]", with or without a :port.'''
+    host = (host or "").strip().lower()
+    if host.startswith("["):                      # [::1]:5000
+        host = host.split("]", 1)[0] + "]"
+    else:
+        host = host.rsplit(":", 1)[0]
+    return host in _LOOPBACK_HOSTS
+
+
+@app.before_request
+def _reject_cross_site_requests():
+    if not _host_is_loopback(request.host):
+        abort(403, "This panel only answers to 127.0.0.1 / localhost.")
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if request.headers.get(PANEL_HEADER) != PANEL_HEADER_VALUE:
+        abort(403, "Missing the control-panel request header.")
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/").lower() != ("%s://%s" % (request.scheme, request.host)).lower():
+        abort(403, "Cross-origin request rejected.")
+    return None
 
 # Project root is the folder this file lives in.
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +133,34 @@ def _load_defaults() -> dict:
 
 
 DEFAULTS = _load_defaults()
+
+
+# ===========================================================================
+# Secret masking. Password-type fields (LinkedIn password, AI key) never leave
+# the server in clear text: responses show SECRET_MASK in their place, and a
+# save that sends SECRET_MASK back means "keep what is stored". Values equal to
+# the shipped default (e.g. "not-needed") are not secrets and stay visible.
+# ===========================================================================
+SECRET_MASK = "********"
+
+
+def _secret_fields():
+    '''[(config_module, key)] of every password-type field in the schema.'''
+    return [(field["config_module"], field["key"])
+            for field in config_schema.iter_fields() if field.get("type") == "password"]
+
+
+def _mask_secrets(config: dict) -> dict:
+    '''A deep copy of `config` with every non-default secret replaced by SECRET_MASK.'''
+    masked = copy.deepcopy(config)
+    for module_name, key in _secret_fields():
+        section = masked.get(module_name)
+        if not isinstance(section, dict):
+            continue
+        value = section.get(key)
+        if value and value != DEFAULTS.get(module_name, {}).get(key):
+            section[key] = SECRET_MASK
+    return masked
 
 
 # ===========================================================================
@@ -244,7 +316,7 @@ _UPDATE_BAR = '''
     btn.addEventListener('click', function () {
         btn.disabled = true;
         text.textContent = 'Updating, please wait...';
-        fetch('/api/update', {method: 'POST'}).then(function (r) { return r.json(); }).then(function (d) {
+        fetch('/api/update', {method: 'POST', headers: {'X-Requested-With': 'control-panel'}}).then(function (r) { return r.json(); }).then(function (d) {
             text.textContent = d.ok ? 'Updated. Close this window and start the app again.'
                                     : 'Update failed. ' + d.message;
             btn.style.display = 'none';
@@ -341,7 +413,7 @@ def api_get_config():
     user_config.json, grouped by config module (secrets, personals, questions,
     search, settings).
     '''
-    return jsonify(_effective_config())
+    return jsonify(_mask_secrets(_effective_config()))
 
 
 @app.route('/api/config', methods=['POST'])
@@ -349,7 +421,9 @@ def api_save_config():
     '''
     Accepts {config_module: {key: value}}, validates against the schema, coerces
     each value to its declared type, rejects unknown modules/keys, merges into
-    user_config.json (read-modify-write) and returns the full saved config.
+    user_config.json (read-modify-write) and returns the full saved config with
+    secrets masked. A password-type value equal to SECRET_MASK is ignored, so
+    re-saving a form that shows the mask never overwrites the stored secret.
     '''
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
@@ -369,6 +443,8 @@ def api_save_config():
             field = valid[section].get(key)
             if field is None:
                 unknown.append(f"{section}.{key}")
+                continue
+            if field["type"] == "password" and value == SECRET_MASK:
                 continue
             try:
                 coerced.setdefault(section, {})[key] = _coerce(field["type"], value)
@@ -393,7 +469,7 @@ def api_save_config():
     except OSError as err:
         return jsonify({"error": f"Could not save settings: {err}"}), 500
 
-    return jsonify(current)
+    return jsonify(_mask_secrets(current))
 
 
 @app.route('/api/run', methods=['POST'])

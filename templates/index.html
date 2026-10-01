@@ -251,7 +251,7 @@
                 if (job.External_Job_link) {
                     var link = makeLink(job.External_Job_link, 'External link');
                     link.addEventListener('click', function () {
-                        fetch('/applied-jobs/' + encodeURIComponent(job.Job_ID), { method: 'PUT' })
+                        fetch('/applied-jobs/' + encodeURIComponent(job.Job_ID), { method: 'PUT', headers: { 'X-Requested-With': 'control-panel' } })
                             .then(function (resp) {
                                 if (resp.ok) markRowApplied(job.Job_ID);
                             })

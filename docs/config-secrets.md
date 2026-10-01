@@ -15,6 +15,11 @@ browser's saved profile, or asks you to log in manually in the Chrome window it 
 
 Nothing here leaves your computer. `config/secrets.py` and `user_config.json` stay on disk.
 
+The control panel never shows a saved password or API key again: once stored, the field
+displays `********`. Type a new value to replace it, or clear the field to remove it. The
+panel also answers only to `127.0.0.1`/`localhost` and refuses requests that other web pages
+open in your browser could send to it, so keep it that way (no CORS, no `0.0.0.0`).
+
 ## AI setup (optional)
 
 AI is **off by default**. When it is on, it helps answer free-text application questions and
