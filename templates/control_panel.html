@@ -524,9 +524,9 @@
         var answersFilter = 'pending';
         var SOURCE_LABELS = { ai: 'AI', user: 'You', form: 'Form' };
 
-        // Every answers call goes through here: JSON on success, a readable error otherwise
-        // (the server's 403 is an HTML page, not JSON).
-        function answersFetch(url, opts) {
+        // Every API call that needs a readable outcome goes through here: {ok, body}, with a
+        // readable error when the server did not answer JSON (its 403 is an HTML page).
+        function panelFetch(url, opts) {
             return fetch(url, opts).then(function (r) {
                 return r.json().catch(function () { return { error: r.status + ' ' + r.statusText }; })
                     .then(function (body) { return { ok: r.ok, body: body }; });
@@ -550,7 +550,7 @@
             var clear = el('button', { class: 'btn danger', type: 'button', text: 'Delete all pending', id: 'clearPendingBtn' });
             clear.addEventListener('click', function () {
                 if (!confirm('Delete every pending answer? The questions will be treated as new next time.')) return;
-                answersFetch('/api/answers?state=pending', { method: 'DELETE', headers: PANEL_HEADERS })
+                panelFetch('/api/answers?state=pending', { method: 'DELETE', headers: PANEL_HEADERS })
                     .then(function (res) {
                         if (!res.ok) { alert('Could not delete: ' + (res.body.error || 'unknown error')); return; }
                         loadAnswers();
@@ -570,7 +570,7 @@
         }
 
         function refreshPendingCount() {
-            answersFetch('/api/answers?state=pending')
+            panelFetch('/api/answers?state=pending')
                 .then(function (res) { if (res.ok) setPendingCount(res.body.pending_count); })
                 .catch(function () {});
         }
@@ -578,7 +578,7 @@
         function answerAction(method, id, body) {
             var opts = { method: method, headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS) };
             if (body) opts.body = JSON.stringify(body);
-            return answersFetch('/api/answers/' + encodeURIComponent(id), opts);
+            return panelFetch('/api/answers/' + encodeURIComponent(id), opts);
         }
 
         function loadAnswers() {
@@ -587,7 +587,7 @@
             document.querySelectorAll('.filters button[data-filter]').forEach(function (b) {
                 b.classList.toggle('on', b.dataset.filter === answersFilter);
             });
-            answersFetch('/api/answers?state=' + answersFilter).then(function (res) {
+            panelFetch('/api/answers?state=' + answersFilter).then(function (res) {
                 holder.innerHTML = '';
                 if (!res.ok) {
                     holder.appendChild(el('p', { class: 'muted-small', text: 'Could not load answers: ' + (res.body.error || 'unknown error') }));
@@ -703,8 +703,9 @@
             wrap.appendChild(el('h2', { class: 'section-h', text: 'Schedule' }));
             wrap.appendChild(el('div', { class: 'note', html:
                 'Start and stop the tool automatically inside these windows (your computer\'s local time). ' +
-                '<strong>Windows only work while this control panel stays open</strong>: keep this window and the ' +
-                'launcher running. A window that ends before it starts runs overnight.' }));
+                '<strong>Windows only work while the control panel program is running</strong>: keep the launcher ' +
+                'window (the one that printed this page\'s address) open; this browser tab may be closed. ' +
+                'A window that ends before it starts runs overnight.' }));
             var rows = el('div', { id: 'scheduleRows' });
             wrap.appendChild(rows);
             var actions = el('div', { class: 'run-actions', style: 'margin-top:10px;' });
@@ -756,12 +757,14 @@
         function loadSchedule() {
             var rows = document.getElementById('scheduleRows');
             if (!rows) return;
-            answersFetch('/api/schedule').then(function (res) {
+            panelFetch('/api/schedule').then(function (res) {
                 if (!res.ok) return;
                 rows.innerHTML = '';
                 (res.body.windows || []).forEach(function (w) { rows.appendChild(scheduleRow(w)); });
                 var msg = document.getElementById('scheduleMsg');
-                if (msg) msg.textContent = res.body.windows && res.body.windows.length
+                if (!msg) return;
+                if (res.body.error) { msg.textContent = res.body.error; return; }
+                msg.textContent = res.body.windows && res.body.windows.length
                     ? (res.body.active_now ? 'A window is active right now.' : 'No window is active right now.')
                     : 'No windows yet. The tool runs only when you press Start.';
             });
@@ -769,7 +772,7 @@
 
         function saveSchedule() {
             var msg = document.getElementById('scheduleMsg');
-            answersFetch('/api/schedule', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS),
+            panelFetch('/api/schedule', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS),
                                             body: JSON.stringify({ windows: readScheduleRows() }) })
                 .then(function (res) {
                     if (!res.ok) { msg.textContent = 'Could not save: ' + (res.body.error || 'unknown error'); return; }

@@ -23,8 +23,8 @@ the tool if it is not running; when the window ends it stops it. A window that e
 starts runs overnight. Manual Start and Stop keep working; a Stop you click inside a window
 holds until the next window begins.
 
-Windows only fire **while the control panel is open**: the scheduler is part of the panel
-process, so keep its window (and the launcher) running. They are stored in the `schedule`
+Windows only fire **while the control panel program is running**: the scheduler is part of
+that process, so keep the launcher window open (the browser tab may be closed). They are stored in the `schedule`
 section of `user_config.json`.
 
 ## Do it in this order

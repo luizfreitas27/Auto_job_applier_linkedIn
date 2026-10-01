@@ -46,6 +46,7 @@ def test_parse_of_nothing_is_no_windows():
     ([{"days": [0], "start": "09:00", "end": "24:00"}], "end"),
     ([{"days": [0], "start": "09:00"}], "end"),
     (["not an object"], "must be an object"),
+    ([{"days": [0], "start": "09:00", "end": "09:00"}], "same time"),
 ])
 def test_parse_rejects_bad_input_with_a_message_for_the_user(raw, message):
     with pytest.raises(ValueError, match=message):
@@ -121,7 +122,7 @@ def test_schedule_round_trips_through_the_panel_and_lives_beside_the_settings(cl
 
     got = client.get("/api/schedule").get_json()
     assert got["windows"] == [{"days": [0, 4], "start": "09:00", "end": "17:00"}]
-    assert got["active_now"] in (True, False) and got["interval_seconds"] == 30
+    assert got["active_now"] in (True, False) and "error" not in got
 
 
 def test_an_empty_list_clears_the_schedule(client, isolated_config):
@@ -162,7 +163,7 @@ def fake_bot(monkeypatch):
     '''Record start/stop requests instead of launching a process.'''
     import app
     calls = []
-    monkeypatch.setattr(app, "start_bot", lambda: (calls.append("start") or ({"running": True, "pid": 1}, 200)))
+    monkeypatch.setattr(app, "start_bot", lambda: (calls.append("start") or ({"running": True, "started": True, "pid": 1}, 200)))
     monkeypatch.setattr(app, "stop_bot", lambda: (calls.append("stop") or {"running": False}))
     return calls
 
@@ -195,6 +196,35 @@ def test_a_manual_stop_inside_a_window_is_not_undone_until_the_next_window(clien
     assert app.scheduler_tick(at(MON, "17:00")) == "stop"       # the window end still fires (idempotent)
     assert app.scheduler_tick(at(TUE, "09:00")) == "start"      # the next window begins
     assert fake_bot == ["start", "stop", "stop", "start"]
+
+
+def test_a_start_that_fails_at_the_window_edge_is_retried_next_tick(client, isolated_config, monkeypatch):
+    import app
+    attempts = []
+    outcomes = [({"running": False, "started": False, "error": "chromedriver missing"}, 500),
+                ({"running": True, "started": True, "pid": 7}, 200)]
+    monkeypatch.setattr(app, "start_bot", lambda: (attempts.append(1) or outcomes[len(attempts) - 1]))
+    client.post("/api/schedule", json={"windows": [{"days": [0], "start": "09:00", "end": "17:00"}]}, headers=PANEL)
+
+    assert app.scheduler_tick(at(MON, "09:00")) == "start"
+    assert app.scheduler_tick(at(MON, "09:00").replace(second=47)) == "start"   # retried
+    assert app.scheduler_tick(at(MON, "09:01")) is None                            # and then left alone
+    assert len(attempts) == 2
+
+
+def test_a_corrupt_schedule_section_is_reported_not_hidden(client, isolated_config):
+    isolated_config.write_text(json.dumps({"schedule": {"windows": [{"days": [], "start": "x", "end": "y"}]}}), encoding="utf-8")
+    body = client.get("/api/schedule").get_json()
+    assert body["windows"] == []
+    assert "not valid" in body["error"]
+
+
+def test_user_config_is_written_atomically_and_both_savers_share_one_file(client, isolated_config):
+    client.post("/api/schedule", json={"windows": [{"days": [0], "start": "09:00", "end": "17:00"}]}, headers=PANEL)
+    client.post("/api/config", json={"secrets": {"use_AI": True}}, headers=PANEL)
+    saved = json.loads(isolated_config.read_text(encoding="utf-8"))
+    assert saved["schedule"]["windows"][0]["start"] == "09:00" and saved["secrets"]["use_AI"] is True
+    assert not (isolated_config.parent / "user_config.json.tmp").exists()
 
 
 def test_the_tick_without_windows_does_nothing(client, isolated_config, fake_bot):

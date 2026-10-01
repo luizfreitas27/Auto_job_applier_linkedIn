@@ -11,8 +11,9 @@ moment falls inside one, and turning that into start/stop decisions. The control
 
 Windows are stored in the `schedule` section of user_config.json as
 `{"windows": [{"days": [0, 1, 2, 3, 4], "start": "09:00", "end": "17:30"}, ...]}` with
-days 0 = Monday ... 6 = Sunday, in the machine's local time. A window whose end is not after
-its start spans midnight ("22:00" to "02:00") and belongs to the day it starts on.
+days 0 = Monday ... 6 = Sunday, in the machine's local time. A window whose end is before
+its start spans midnight ("22:00" to "02:00") and belongs to the day it starts on. Start and
+end may not be equal: that would be a 24-hour window, far more likely a typo.
 '''
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, time
 
-WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _TIME = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
@@ -41,7 +41,7 @@ class ScheduleWindow:
     @property
     def spans_midnight(self) -> bool:
         '''True when the window ends on the following day.'''
-        return _parse_time(self.end) <= _parse_time(self.start)
+        return _parse_time(self.end) < _parse_time(self.start)
 
 
 def _parse_time(text: str) -> time:
@@ -52,11 +52,11 @@ def _parse_time(text: str) -> time:
     return time(int(match.group(1)), int(match.group(2)))
 
 
-def parse_windows(raw) -> list[ScheduleWindow]:
+def parse_windows(raw: object) -> list[ScheduleWindow]:
     '''
     Validate the JSON the panel sends or the config holds and return windows. Raises
     ValueError with a message meant for the user when anything is off: not a list, a window
-    with no days, an unknown day, or a malformed time.
+    with no days, an unknown day, a malformed time, or a start equal to its end.
     '''
     if raw is None:
         return []
@@ -81,6 +81,8 @@ def parse_windows(raw) -> list[ScheduleWindow]:
                 _parse_time(value)
             except ValueError as err:
                 raise ValueError(f"Window {index} {label}: {err}") from None
+        if _parse_time(start) == _parse_time(end):
+            raise ValueError(f"Window {index}: start and end are the same time; a window must last at least a minute")
         windows.append(ScheduleWindow(days=tuple(sorted(cleaned)), start=start, end=end))
     return windows
 

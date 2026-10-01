@@ -32,6 +32,7 @@ import copy
 import signal
 import subprocess
 import threading
+import time
 import importlib
 
 import config_schema
@@ -168,6 +169,20 @@ def _mask_secrets(config: dict) -> dict:
 # ===========================================================================
 # Config API helpers
 # ===========================================================================
+_user_config_lock = threading.Lock()
+
+
+def _write_user_config(data: dict) -> None:
+    '''
+    The one way user_config.json is written: a sibling temp file replaced over the real one,
+    so a crash mid-write never leaves an empty file (which would read as "no settings").
+    Callers hold `_user_config_lock` around their read-modify-write so two panel requests
+    (Save settings, Save schedule) cannot drop each other's change.
+    '''
+    temporaryPath = USER_CONFIG_PATH + ".tmp"
+    with open(temporaryPath, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, ensure_ascii=False)
+    os.replace(temporaryPath, USER_CONFIG_PATH)
 def _effective_config() -> dict:
     '''
     Return {config_module: {key: value}} of the pristine defaults overlaid with
@@ -457,19 +472,18 @@ def api_save_config():
         return jsonify({"error": "Unknown settings rejected", "unknown": unknown}), 400
 
     # Read-modify-write user_config.json.
-    current = _overrides.load_user_config()
-    for section, values in coerced.items():
-        target = current.get(section)
-        if not isinstance(target, dict):
-            target = {}
-        target.update(values)
-        current[section] = target
-
-    try:
-        with open(USER_CONFIG_PATH, "w", encoding="utf-8") as file:
-            json.dump(current, file, indent=2, ensure_ascii=False)
-    except OSError as err:
-        return jsonify({"error": f"Could not save settings: {err}"}), 500
+    with _user_config_lock:
+        current = _overrides.load_user_config()
+        for section, values in coerced.items():
+            target = current.get(section)
+            if not isinstance(target, dict):
+                target = {}
+            target.update(values)
+            current[section] = target
+        try:
+            _write_user_config(current)
+        except OSError as err:
+            return jsonify({"error": f"Could not save settings: {err}"}), 500
 
     return jsonify(_mask_secrets(current))
 
@@ -482,7 +496,7 @@ def start_bot() -> tuple[dict, int]:
     global _bot_proc
     with _bot_lock:
         if _is_running():
-            return {"running": True, "pid": _bot_proc.pid, "message": "The tool is already running."}, 200
+            return {"running": True, "started": False, "pid": _bot_proc.pid, "message": "The tool is already running."}, 200
         try:
             # Truncate the log at the start of each run.
             log_file = open(LOG_PATH, "w", encoding="utf-8")
@@ -497,13 +511,13 @@ def start_bot() -> tuple[dict, int]:
                 popen_kwargs["start_new_session"] = True
             _bot_proc = subprocess.Popen(_bot_command(), **popen_kwargs)
         except Exception as err:
-            return {"running": False, "error": str(err)}, 500
+            return {"running": False, "started": False, "error": str(err)}, 500
         try:
             with open(PID_PATH, "w", encoding="utf-8") as pid_file:
                 pid_file.write(str(_bot_proc.pid))
         except OSError:
             pass
-        return {"running": True, "pid": _bot_proc.pid}, 200
+        return {"running": True, "started": True, "pid": _bot_proc.pid}, 200
 
 
 def stop_bot() -> dict:
@@ -647,30 +661,46 @@ _schedule_active_before: bool | None = None       # what the last scheduler tick
 _scheduler_thread: threading.Thread | None = None
 
 
-def load_schedule() -> list:
-    '''The configured windows, or [] when none or unreadable (a bad file must not stop the panel).'''
+def read_schedule() -> tuple[list[schedule_windows.ScheduleWindow], str | None]:
+    '''
+    The configured windows and, when the "schedule" section of user_config.json is not
+    valid, the reason. A bad section must not stop the panel, but it must not be silently
+    treated as "no windows" either: the Run tab shows the reason until the user saves again.
+    '''
     raw = _overrides.load_user_config().get("schedule", {})
     try:
-        return schedule_windows.parse_windows(raw.get("windows") if isinstance(raw, dict) else None)
-    except ValueError:
-        return []
+        return schedule_windows.parse_windows(raw.get("windows") if isinstance(raw, dict) else None), None
+    except ValueError as err:
+        return [], f"The saved schedule is not valid ({err}). Save a new one to replace it."
 
 
-def save_schedule(windows: list) -> None:
-    '''Write the windows into the "schedule" section of user_config.json (read-modify-write).'''
-    current = _overrides.load_user_config()
-    current["schedule"] = {"windows": [window.as_dict() for window in windows]}
-    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as file:
-        json.dump(current, file, indent=2, ensure_ascii=False)
+def load_schedule() -> list[schedule_windows.ScheduleWindow]:
+    '''The configured windows, [] when none or invalid (the scheduler then does nothing).'''
+    return read_schedule()[0]
+
+
+def save_schedule(windows: list[schedule_windows.ScheduleWindow]) -> None:
+    '''Write the windows into the "schedule" section of user_config.json (locked read-modify-write).'''
+    with _user_config_lock:
+        current = _overrides.load_user_config()
+        current["schedule"] = {"windows": _windows_json(windows)}
+        _write_user_config(current)
+
+
+def _windows_json(windows: list[schedule_windows.ScheduleWindow]) -> list[dict]:
+    '''Windows as the panel and the config file carry them.'''
+    return [window.as_dict() for window in windows]
 
 
 @app.route('/api/schedule', methods=['GET'])
 def api_get_schedule() -> Response:
-    '''The schedule windows and whether one is active right now.'''
-    windows = load_schedule()
-    return jsonify({"windows": [window.as_dict() for window in windows],
-                    "active_now": schedule_windows.window_is_active(windows, datetime.now()),
-                    "interval_seconds": SCHEDULER_INTERVAL_SECONDS})
+    '''The schedule windows, whether one is active right now, and why the saved ones are unusable, if so.'''
+    windows, error = read_schedule()
+    body = {"windows": _windows_json(windows),
+            "active_now": schedule_windows.window_is_active(windows, datetime.now())}
+    if error:
+        body["error"] = error
+    return jsonify(body)
 
 
 @app.route('/api/schedule', methods=['POST'])
@@ -687,14 +717,15 @@ def api_save_schedule() -> Response | tuple:
         save_schedule(windows)
     except OSError as err:
         return jsonify({"error": f"Could not save the schedule: {err}"}), 500
-    return jsonify({"windows": [window.as_dict() for window in windows]})
+    return jsonify({"windows": _windows_json(windows)})
 
 
 def scheduler_tick(now: datetime | None = None) -> str | None:
     '''
     One pass of the scheduler: start the bot on entering a window, stop it on leaving one.
     Edge-triggered, so a bot stopped by hand or finished on its own inside a window is left
-    alone until the next window begins. Returns the action taken, for the log and the tests.
+    alone until the next window begins. A start that fails (the process could not be
+    spawned) is retried on the next tick. Returns the action taken, for the log and the tests.
     '''
     global _schedule_active_before
     activeNow = schedule_windows.window_is_active(load_schedule(), now or datetime.now())
@@ -702,9 +733,14 @@ def scheduler_tick(now: datetime | None = None) -> str | None:
     _schedule_active_before = activeNow
     if action == "start":
         status, _ = start_bot()
-        print("Schedule window began: %s" % ("the tool is already running." if status.get("message") else
-                                             "started the tool." if status.get("running") else
-                                             "could not start the tool: %s" % status.get("error")), flush=True)
+        if status.get("started"):
+            print("Schedule window began: started the tool.", flush=True)
+        elif status.get("running"):
+            print("Schedule window began: the tool is already running.", flush=True)
+        else:
+            print("Schedule window began but the tool could not start (%s); will try again in %d s."
+                  % (status.get("error"), SCHEDULER_INTERVAL_SECONDS), flush=True)
+            _schedule_active_before = False          # so the next tick sees "entering" again
     elif action == "stop":
         stop_bot()
         print("Schedule window ended: stopped the tool.", flush=True)
@@ -713,7 +749,6 @@ def scheduler_tick(now: datetime | None = None) -> str | None:
 
 def _scheduler_loop() -> None:
     '''Run scheduler_tick forever, every SCHEDULER_INTERVAL_SECONDS. Errors are printed, never fatal.'''
-    import time
     while True:
         try:
             scheduler_tick()
@@ -747,14 +782,14 @@ def _freeze_config() -> None:
     a shipped default stops reaching that user. Acceptable - a hand-edited file
     was already pinned. Freeze only the keys that differ from HEAD if it bites.
     '''
-    current = _overrides.load_user_config()
-    for section, values in _effective_config().items():
-        if not isinstance(current.get(section), dict):
-            current[section] = {}
-        for key, value in values.items():
-            current[section].setdefault(key, value)
-    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as file:
-        json.dump(current, file, indent=2, ensure_ascii=False)
+    with _user_config_lock:
+        current = _overrides.load_user_config()
+        for section, values in _effective_config().items():
+            if not isinstance(current.get(section), dict):
+                current[section] = {}
+            for key, value in values.items():
+                current[section].setdefault(key, value)
+        _write_user_config(current)
 
 
 @app.route('/api/update-check', methods=['GET'])
