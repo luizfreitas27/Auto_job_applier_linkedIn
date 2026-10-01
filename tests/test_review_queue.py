@@ -58,21 +58,23 @@ def test_an_empty_memory_lists_nothing(client, panel_memory):
 
 
 # ------------------------------------ approve -------------------------------
-def test_approving_as_is_marks_the_answer_approved_and_yours(client, panel_memory):
+def test_approving_as_is_marks_the_answer_approved_and_keeps_its_author(client, panel_memory):
+    '''The AI stays the author of an answer the user merely vetted; "From" keeps telling the story.'''
     a, _, _, _ = seed(panel_memory)
     resp = client.post(f"/api/answers/{a.id}", json={}, headers=PANEL)
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["answer"]["state"] == "approved" and body["answer"]["source"] == "user"
+    assert body["answer"]["state"] == "approved" and body["answer"]["source"] == "ai"
     assert body["answer"]["answer"] == "Hybrid"
     assert body["pending_count"] == 2
     assert AnswerMemory(panel_memory.path).get(a.id).state == "approved"      # persisted
 
 
-def test_editing_and_approving_replaces_the_text(client, panel_memory):
+def test_editing_and_approving_replaces_the_text_and_makes_it_yours(client, panel_memory):
     a, _, _, _ = seed(panel_memory)
     resp = client.post(f"/api/answers/{a.id}", json={"answer": "  Remote  "}, headers=PANEL)
     assert resp.get_json()["answer"]["answer"] == "Remote"
+    assert resp.get_json()["answer"]["source"] == "user"
     assert AnswerMemory(panel_memory.path).get(a.id).answer == "Remote"
 
 
@@ -145,6 +147,21 @@ def test_a_bot_use_of_an_answer_deleted_meanwhile_does_not_resurrect_it(tmp_path
     assert AnswerMemory(path).entries == []
 
 
+def test_a_panel_approval_survives_a_bot_write_that_lands_between_read_and_save(tmp_path, monkeypatch):
+    '''
+    save() must persist what this instance holds, not re-read the file first: the re-read
+    would silently drop the approval while the route still reports success.
+    '''
+    path = tmp_path / "answers_memory.json"
+    bot, panel = AnswerMemory(path), AnswerMemory(path)
+    entry = bot.remember("Q1", "text", "A1", source="ai")
+    target = panel.get(entry.id)                          # the panel has read the file...
+    bot.remember("Q2", "text", "A2", source="ai")         # ...and the bot writes before the panel saves
+    target.state = "approved"
+    panel.save()
+    assert AnswerMemory(path).get(entry.id).state == "approved"
+
+
 def test_a_bot_remember_does_not_clobber_panel_edits_to_other_entries(tmp_path):
     path = tmp_path / "answers_memory.json"
     bot, panel = AnswerMemory(path), AnswerMemory(path)
@@ -166,3 +183,5 @@ def test_the_run_summary_reports_pending_answers(tmp_path, monkeypatch):
     summary = bot.run_summary(total_runs=3)
     assert "Total runs: 3" in summary
     assert "Pending answers to review in the control panel: 2" in summary
+    import inspect
+    assert "Pending answers to review:" in inspect.getsource(bot.main)      # the aligned block the user reads

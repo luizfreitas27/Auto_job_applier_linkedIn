@@ -22,7 +22,7 @@ carry the control-panel header (see `_reject_cross_site_requests`). Do not
 change these: any web page open in the same browser can reach 127.0.0.1.
 '''
 
-from flask import Flask, request, jsonify, render_template, abort
+from flask import Flask, Response, request, jsonify, render_template, abort
 import csv
 from datetime import datetime
 import os
@@ -49,7 +49,7 @@ app = Flask(__name__)
 # rules close that off without changing how the panel itself works:
 #   * No CORS headers are ever sent, so a cross-origin fetch() cannot READ a
 #     response (never add flask-cors back).
-#   * Every state-changing request (POST/PUT) must carry a custom header. A
+#   * Every state-changing request (POST/PUT/DELETE) must carry a custom header. A
 #     cross-origin request with a custom header needs a CORS preflight, which
 #     fails here, so another page cannot even SEND one. Plain <form> posts have
 #     no way to add the header either.
@@ -561,37 +561,37 @@ def api_logs():
 answers_memory = AnswerMemory()
 
 
-def _answer_to_json(entry) -> dict:
-    '''A remembered answer as the Answers tab consumes it.'''
-    return {
-        "id": entry.id, "question": entry.label, "kind": entry.kind, "answer": entry.answer,
-        "source": entry.source, "state": entry.state, "uses": entry.uses,
-        "last_job_link": entry.last_job_link, "updated_at": entry.updated_at,
-    }
-
-
-def _valid_state_or_none(raw: str | None):
-    '''A review state from the query string, None for "all", or ValueError for junk.'''
-    if raw in (None, "", "all"):
+def _review_state(raw: str | None, allow_all: bool) -> str | None:
+    '''
+    A review state from the query string. None means "all" when `allow_all`; anything that is
+    not a known state raises ValueError.
+    '''
+    if allow_all and raw in (None, "", "all"):
         return None
     if raw not in STATES:
-        raise ValueError(f"state must be one of {list(STATES)} or 'all'")
+        allowed = list(STATES) + (["all"] if allow_all else [])
+        raise ValueError(f"state must be one of {allowed}")
     return raw
 
 
+def _with_pending_count(body: dict) -> Response:
+    '''Every review-queue response carries the pending count, so the tab title can follow it.'''
+    body["pending_count"] = answers_memory.pending_count()
+    return jsonify(body)
+
+
 @app.route('/api/answers', methods=['GET'])
-def api_list_answers():
-    '''Remembered answers, newest first, optionally filtered by ?state=pending|approved, plus the pending count.'''
+def api_list_answers() -> Response | tuple:
+    '''Remembered answers, newest first, optionally filtered by ?state=pending|approved|all.'''
     try:
-        state = _valid_state_or_none(request.args.get("state"))
+        state = _review_state(request.args.get("state"), allow_all=True)
     except ValueError as err:
         return jsonify({"error": str(err)}), 400
-    return jsonify({"answers": [_answer_to_json(entry) for entry in answers_memory.list(state)],
-                    "pending_count": answers_memory.pending_count()})
+    return _with_pending_count({"answers": [entry.as_row() for entry in answers_memory.list(state)]})
 
 
 @app.route('/api/answers/<entry_id>', methods=['POST'])
-def api_approve_answer(entry_id):
+def api_approve_answer(entry_id: str) -> Response | tuple:
     '''Approve a remembered answer, replacing its text first when the body carries "answer".'''
     payload = request.get_json(silent=True) or {}
     answer = payload.get("answer")
@@ -602,24 +602,25 @@ def api_approve_answer(entry_id):
     entry = answers_memory.approve(entry_id, answer)
     if entry is None:
         return jsonify({"error": "No remembered answer with that id."}), 404
-    return jsonify({"answer": _answer_to_json(entry), "pending_count": answers_memory.pending_count()})
+    return _with_pending_count({"answer": entry.as_row()})
 
 
 @app.route('/api/answers/<entry_id>', methods=['DELETE'])
-def api_delete_answer(entry_id):
+def api_delete_answer(entry_id: str) -> Response | tuple:
     '''Forget one remembered answer, so its question is treated as new again.'''
     if not answers_memory.delete(entry_id):
         return jsonify({"error": "No remembered answer with that id."}), 404
-    return jsonify({"deleted": 1, "pending_count": answers_memory.pending_count()})
+    return _with_pending_count({"deleted": 1})
 
 
 @app.route('/api/answers', methods=['DELETE'])
-def api_delete_answers_in_state():
+def api_delete_answers_in_state() -> Response | tuple:
     '''Forget every remembered answer in ?state=pending|approved (bulk clear of the review queue).'''
-    state = request.args.get("state")
-    if state not in STATES:
-        return jsonify({"error": f"state must be one of {list(STATES)}"}), 400
-    return jsonify({"deleted": answers_memory.delete_all(state), "pending_count": answers_memory.pending_count()})
+    try:
+        state = _review_state(request.args.get("state"), allow_all=False)
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+    return _with_pending_count({"deleted": answers_memory.delete_all(state)})
 
 
 # ===========================================================================

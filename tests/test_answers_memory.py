@@ -136,11 +136,13 @@ def test_pending_count_list_approve_and_delete(memory):
     approved = memory.approve(a.id, answer="A1 corrected")
     assert approved.state == "approved" and approved.answer == "A1 corrected" and approved.source == "user"
     assert memory.pending_count() == 1
+    vetted = memory.approve(b.id)
+    assert vetted.state == "approved" and vetted.source == "ai"          # approved as-is keeps the author
+    assert memory.pending_count() == 0
 
     assert memory.approve("nope") is None
     assert memory.delete(b.id) is True
     assert memory.delete(b.id) is False
-    assert memory.pending_count() == 0
     assert memory.get(b.id) is None
 
 

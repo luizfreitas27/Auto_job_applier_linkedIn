@@ -219,8 +219,8 @@
         table.jobs input.answer-edit { width: 100%; min-width: 160px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
         table.jobs .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
         table.jobs .row-actions .btn { padding: 4px 10px; font-size: 13px; }
-        .state-pending { color: #b45309; font-weight: 600; }
-        .state-approved { color: #15803d; font-weight: 600; }
+        .state-pending { color: var(--warn); font-weight: 600; }
+        .state-approved { color: var(--ok); font-weight: 600; }
 
         /* --- Responsive --- */
         @media (max-width: 640px) {
@@ -518,6 +518,16 @@
 
         // ---- Answers tab (review queue) ----
         var answersFilter = 'pending';
+        var SOURCE_LABELS = { ai: 'AI', user: 'You', form: 'Form' };
+
+        // Every answers call goes through here: JSON on success, a readable error otherwise
+        // (the server's 403 is an HTML page, not JSON).
+        function answersFetch(url, opts) {
+            return fetch(url, opts).then(function (r) {
+                return r.json().catch(function () { return { error: r.status + ' ' + r.statusText }; })
+                    .then(function (body) { return { ok: r.ok, body: body }; });
+            });
+        }
 
         function buildAnswersPanel() {
             var panel = el('div', { class: 'panel' });
@@ -536,10 +546,11 @@
             var clear = el('button', { class: 'btn danger', type: 'button', text: 'Delete all pending', id: 'clearPendingBtn' });
             clear.addEventListener('click', function () {
                 if (!confirm('Delete every pending answer? The questions will be treated as new next time.')) return;
-                fetch('/api/answers?state=pending', { method: 'DELETE', headers: PANEL_HEADERS })
-                    .then(function (r) { return r.json(); })
-                    .then(function (d) { setPendingCount(d.pending_count); loadAnswers(); })
-                    .catch(function () {});
+                answersFetch('/api/answers?state=pending', { method: 'DELETE', headers: PANEL_HEADERS })
+                    .then(function (res) {
+                        if (!res.ok) { alert('Could not delete: ' + (res.body.error || 'unknown error')); return; }
+                        loadAnswers();
+                    });
             });
             filters.appendChild(clear);
             panel.appendChild(filters);
@@ -555,16 +566,15 @@
         }
 
         function refreshPendingCount() {
-            fetch('/api/answers?state=pending').then(function (r) { return r.json(); })
-                .then(function (d) { setPendingCount(d.pending_count); })
+            answersFetch('/api/answers?state=pending')
+                .then(function (res) { if (res.ok) setPendingCount(res.body.pending_count); })
                 .catch(function () {});
         }
 
         function answerAction(method, id, body) {
             var opts = { method: method, headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS) };
             if (body) opts.body = JSON.stringify(body);
-            return fetch('/api/answers/' + encodeURIComponent(id), opts)
-                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, body: d }; }); });
+            return answersFetch('/api/answers/' + encodeURIComponent(id), opts);
         }
 
         function loadAnswers() {
@@ -573,9 +583,14 @@
             document.querySelectorAll('.filters button[data-filter]').forEach(function (b) {
                 b.classList.toggle('on', b.dataset.filter === answersFilter);
             });
-            fetch('/api/answers?state=' + answersFilter).then(function (r) { return r.json(); }).then(function (data) {
-                setPendingCount(data.pending_count);
+            answersFetch('/api/answers?state=' + answersFilter).then(function (res) {
                 holder.innerHTML = '';
+                if (!res.ok) {
+                    holder.appendChild(el('p', { class: 'muted-small', text: 'Could not load answers: ' + (res.body.error || 'unknown error') }));
+                    return;
+                }
+                var data = res.body;
+                setPendingCount(data.pending_count);
                 var rows = data.answers || [];
                 if (rows.length === 0) {
                     holder.appendChild(el('p', { class: 'muted-small', text: answersFilter === 'pending'
@@ -595,7 +610,7 @@
                     edit.value = row.answer;
                     if (row.kind === 'checkbox') edit.disabled = true;      // "checked" is the only value a box can have
                     tr.appendChild(el('td', {}, [edit]));
-                    tr.appendChild(el('td', { text: row.source === 'ai' ? 'AI' : row.source === 'user' ? 'You' : 'Form' }));
+                    tr.appendChild(el('td', { text: SOURCE_LABELS[row.source] || row.source }));
                     tr.appendChild(el('td', {}, [el('span', { class: 'state-' + row.state, text: row.state })]));
                     tr.appendChild(el('td', { text: String(row.uses) }));
                     var jobCell = el('td');
@@ -612,7 +627,10 @@
                     });
                     var del = el('button', { class: 'btn danger', type: 'button', text: 'Delete' });
                     del.addEventListener('click', function () {
-                        answerAction('DELETE', row.id).then(function () { loadAnswers(); });
+                        answerAction('DELETE', row.id).then(function (res) {
+                            if (!res.ok) { alert('Could not delete: ' + (res.body.error || 'unknown error')); return; }
+                            loadAnswers();
+                        });
                     });
                     actions.appendChild(approve);
                     actions.appendChild(del);

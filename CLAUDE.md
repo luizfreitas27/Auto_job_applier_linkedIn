@@ -72,7 +72,7 @@ user's config, `runAiBot.py` reads them defensively with `globals().get("name", 
   `.bot_run.pid`; the UI polls `/api/logs?offset=` and `/api/status`.
 - Security rules that must not be loosened: binds to `127.0.0.1` only, `debug=False`, **no
   CORS headers** (flask-cors was removed on purpose), a `before_request` hook that rejects
-  non-loopback `Host` headers and any POST/PUT without `X-Requested-With: control-panel`, and
+  non-loopback `Host` headers and any POST/PUT/DELETE without `X-Requested-With: control-panel`, and
   `_mask_secrets()` which replaces every schema `password`-type value with `SECRET_MASK` in
   responses. Sending the mask back on save means "keep the stored value". Templates hardcode
   the same header and mask string.

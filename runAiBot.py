@@ -1810,7 +1810,8 @@ def main() -> None:
         print_lg("                              ----------")
         print_lg("Total applied or collected:     {}".format(easy_applied_count + external_jobs_count))
         print_lg("\nFailed jobs:                    {}".format(failed_count))
-        print_lg("Irrelevant jobs skipped:        {}\n".format(skip_count))
+        print_lg("Irrelevant jobs skipped:        {}".format(skip_count))
+        print_lg("Pending answers to review:      {}\n".format(answers_memory.pending_count()))
         if randomly_answered_questions: print_lg("\n\nQuestions randomly answered:\n  {}  \n\n".format(";\n".join(str(question) for question in randomly_answered_questions)))
         quotes = choice([
             "Never quit. You're one step closer than before. - Sai Vignesh Golla", 
