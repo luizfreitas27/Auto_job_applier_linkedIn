@@ -79,14 +79,14 @@ The tool reshapes these to fit the question it is asked:
 For a dry run that fills everything in and stops without submitting, see
 [`stop_before_submit`](config-settings.md#dry-runs-stop_before_submit).
 
-## Answers the tool learns: `answers_memory.json`
+## Remembered answers: `answers_memory.json`
 
 When a question matches none of the settings above, the tool asks the AI (if it is on) and
 **remembers** the answer in `answers_memory.json` at the project root. The next time the same
 question appears, at any company, the remembered answer is used and the AI is not asked
 again. Small rewordings count as the same question; the log says when a match was approximate.
 
-Each remembered answer records the question, the control type, the answer, who gave it
+Each remembered answer records the question, the control kind, the answer, who gave it
 (`ai` or `user`), its review state (`pending` until you confirm it, then `approved`), how many
 times it was used and the last job it was used on. Remembered answers are used immediately,
 including pending ones; reviewing them improves future applications, it does not block the
@@ -95,7 +95,7 @@ current one.
 **Sensitive questions never use this**: work authorization, visa, citizenship, security
 clearance, salary, disability and veteran status are answered only from the settings above.
 
-The file is yours and is ignored by git. Delete an entry to make the tool treat that question
+The file is yours and is ignored by git. Delete a remembered answer to make the tool treat that question
 as new again, or delete the file to start over.
 
 ## Not yet implemented

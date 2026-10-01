@@ -108,6 +108,7 @@ def test_an_ai_answer_to_a_text_question_is_remembered_as_pending(bot, memory, a
     assert found is not None
     assert found.answer == "Python" and found.state == "pending" and found.source == "ai"
     assert found.last_job_link == JOB_A
+    assert found.uses == 1                          # used on this very job
 
 
 def test_the_next_job_with_the_same_question_is_answered_from_memory(bot, memory, ai):
@@ -197,6 +198,23 @@ def test_sensitive_questions_never_reach_memory_or_the_ai(bot, memory, ai, monke
 
     assert field.value == ""
     assert ai.calls == []
+
+
+def test_the_email_question_is_never_guessed_or_remembered(bot, memory, ai):
+    '''A made-up email would be remembered and replayed on every later application.'''
+    ai.replies["Email address"] = "made.up@example.com"
+    modal, field = text_form("Email address")
+
+    bot.answer_questions(modal, set(), "Remote", job_link=JOB_A)
+
+    assert field.value == ""
+    assert ai.calls == []
+    assert memory.entries == []
+
+
+def test_pay_attention_is_not_a_salary_question(bot):
+    assert not bot.is_sensitive_question("Do you pay attention to detail?")
+    assert bot.is_sensitive_question("What is your expected pay range?")
 
 
 def test_is_sensitive_question_matches_whole_words_only(bot):

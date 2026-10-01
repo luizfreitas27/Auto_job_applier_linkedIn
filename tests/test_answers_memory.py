@@ -36,7 +36,7 @@ def test_an_ai_answer_is_remembered_as_pending(memory):
     entry = memory.remember("Years of experience with Python?", "text", "4", source="ai",
                             job_link="https://www.linkedin.com/jobs/view/1")
     assert entry.state == "pending" and entry.source == "ai"
-    assert entry.uses == 1 and entry.last_job_link.endswith("/1")
+    assert entry.uses == 0 and entry.last_job_link.endswith("/1")      # remembering is not using
 
     found, approximate = memory.lookup("Years of experience with Python?", "text")
     assert found is entry and approximate is False
@@ -87,6 +87,20 @@ def test_remembering_the_same_question_again_updates_instead_of_duplicating(memo
     assert first.answer == "In two weeks" and first.state == "approved" and first.source == "user"
 
 
+def test_an_ai_answer_never_overrides_an_approved_user_answer(memory):
+    approved = memory.remember("Desired start date", "text", "In two weeks", source="user")
+    again = memory.remember("Desired start date", "text", "ASAP", source="ai")
+    assert again is approved
+    assert approved.answer == "In two weeks" and approved.state == "approved" and approved.source == "user"
+
+
+def test_a_user_answer_replaces_a_pending_ai_answer_and_approves_it(memory):
+    pending = memory.remember("Desired start date", "text", "ASAP", source="ai")
+    corrected = memory.remember("Desired start date", "text", "In two weeks", source="user")
+    assert corrected is pending
+    assert pending.answer == "In two weeks" and pending.state == "approved" and pending.source == "user"
+
+
 def test_invalid_kind_or_source_is_rejected(memory):
     with pytest.raises(ValueError):
         memory.remember("q", "slider", "1", source="ai")
@@ -133,7 +147,7 @@ def test_changes_are_persisted_and_reloaded(memory):
     reloaded = AnswerMemory(memory.path)
     found, _ = reloaded.lookup("Desired start date", "text")
     assert found is not None
-    assert found.id == entry.id and found.uses == 2 and found.last_job_link.endswith("/2")
+    assert found.id == entry.id and found.uses == 1 and found.last_job_link.endswith("/2")   # one record_use
     assert not memory.path.with_suffix(".json.tmp").exists()        # the temp file was replaced
 
 

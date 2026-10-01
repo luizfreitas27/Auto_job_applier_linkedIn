@@ -14,6 +14,12 @@ and an approximate hit is logged with both labels so a wrong reuse can be audite
 
 This module knows nothing about which questions are sensitive; the bot decides that before
 it ever consults the memory (see `is_sensitive_question` in runAiBot.py).
+
+ponytail: one process at a time. The file is loaded once and every save rewrites it from
+memory, so the bot (which owns the file during a run) and the control panel (which will edit
+it for the review queue) must not write concurrently. The panel should reload before each
+operation and avoid writing while the bot runs; move to per-entry writes or a lock if that
+ever bites.
 '''
 
 from __future__ import annotations
@@ -41,19 +47,20 @@ _NON_WORD = re.compile(r"[^a-z0-9\s]+")
 _SPACES = re.compile(r"\s+")
 
 
-def normalise(label: str) -> str:
+def normalise(label: str | None) -> str:
     '''Lowercase, drop punctuation, collapse whitespace: the key half of a remembered answer.'''
     lowered = (label or "").lower()
     return _SPACES.sub(" ", _NON_WORD.sub(" ", lowered)).strip()
 
 
 def _now() -> str:
+    '''Local timestamp to the second, the format every entry's created_at/updated_at uses.'''
     return datetime.now().isoformat(timespec="seconds")
 
 
 @dataclass
 class RememberedAnswer:
-    '''One entry in the answer memory. `answer` is the visible text; for a checkbox it is "checked".'''
+    '''One remembered answer. `answer` is the visible text; for a checkbox it is "checked".'''
     label: str
     kind: str
     answer: str
@@ -67,6 +74,7 @@ class RememberedAnswer:
     updated_at: str = field(default_factory=_now)
 
     def __post_init__(self) -> None:
+        '''Derive the lookup key from the label unless one was loaded from disk.'''
         if not self.normalised:
             self.normalised = normalise(self.label)
 
@@ -102,6 +110,7 @@ class AnswerMemory:
         return self._entries
 
     def _load(self) -> list[RememberedAnswer]:
+        '''Read the file. Missing: empty. Unreadable or not JSON: empty, with one warning.'''
         try:
             with open(self.path, "r", encoding="utf-8") as file:
                 data = json.load(file)
@@ -164,11 +173,18 @@ class AnswerMemory:
         return sum(1 for entry in self.entries if entry.state == "pending")
 
     # ------------------------------------------------------------------ changes
+    def _touch(self, entry: RememberedAnswer, job_link: str | None = None) -> None:
+        '''Stamp an entry as changed (and used on `job_link`, if given), then persist.'''
+        if job_link:
+            entry.last_job_link = job_link
+        entry.updated_at = _now()
+        self.save()
+
     def remember(self, label: str, kind: str, answer: str, source: str, job_link: str | None = None) -> RememberedAnswer:
         '''
         Store an answer. An AI answer is `pending`; an answer the user gave is `approved`.
-        If an exact entry already exists for this question, its answer is replaced instead of
-        adding a duplicate; a user answer also approves it.
+        If an exact entry already exists for this question it is updated instead of
+        duplicated, except that an AI answer never replaces one the user approved.
         '''
         if kind not in KINDS: raise ValueError(f"Unknown control kind {kind!r}")
         if source not in SOURCES: raise ValueError(f"Unknown answer source {source!r}")
@@ -176,17 +192,16 @@ class AnswerMemory:
         key = normalise(label)
         existing = next((entry for entry in self.entries if entry.kind == kind and entry.normalised == key), None)
         if existing is not None:
+            if source == "ai" and existing.state == "approved":
+                return existing             # the user's word stands; the AI never overrides it
             existing.answer = answer
             existing.source = source
-            if source == "user":
-                existing.state = "approved"
-            existing.updated_at = _now()
-            if job_link:
-                existing.last_job_link = job_link
-            self.save()
+            existing.state = state
+            self._touch(existing, job_link)
             return existing
+        # `uses` starts at 0: remembering is not using. Callers count a use with record_use().
         entry = RememberedAnswer(label=label, kind=kind, answer=answer, source=source, state=state,
-                                 uses=1 if job_link else 0, last_job_link=job_link or "")
+                                 last_job_link=job_link or "")
         self.entries.append(entry)
         self.save()
         return entry
@@ -194,10 +209,7 @@ class AnswerMemory:
     def record_use(self, entry: RememberedAnswer, job_link: str | None = None) -> None:
         '''Count one more use of a remembered answer, on `job_link` if given.'''
         entry.uses += 1
-        if job_link:
-            entry.last_job_link = job_link
-        entry.updated_at = _now()
-        self.save()
+        self._touch(entry, job_link)
 
     def approve(self, entry_id: str, answer: str | None = None) -> RememberedAnswer | None:
         '''Mark an entry approved, optionally replacing its answer first. None if the id is unknown.'''
@@ -208,8 +220,7 @@ class AnswerMemory:
             entry.answer = answer
         entry.state = "approved"
         entry.source = "user"
-        entry.updated_at = _now()
-        self.save()
+        self._touch(entry)
         return entry
 
     def delete(self, entry_id: str) -> bool:

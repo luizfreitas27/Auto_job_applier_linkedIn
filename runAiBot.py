@@ -461,7 +461,8 @@ attestation_terms = ['certify', 'certifies', 'certification', 'attest', 'attesta
 # the answer memory. A wrong guess here misstates the applicant's legal status, pay or
 # protected characteristics on a real application, so these families are gated before
 # either fallback is consulted.
-salary_terms = ['salary', 'salaries', 'compensation', 'ctc', 'pay', 'remuneration', 'wage', 'wages']
+# No bare 'pay': "Do you pay attention to detail?" is not a salary question.
+salary_terms = ['salary', 'salaries', 'compensation', 'ctc', 'remuneration', 'wage', 'wages', 'pay rate', 'pay range']
 disability_terms = ['disability', 'disabilities', 'disabled', 'handicap', 'handicapped']
 veteran_terms = ['veteran', 'veterans', 'military']
 sensitive_terms = (visa_terms + authorization_terms + citizenship_terms + clearance_terms
@@ -514,16 +515,17 @@ def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | N
         answers_memory.record_use(remembered, job_link)
         print_lg(f'Memory answered "{label_org}"{" (approximate match)" if approximate else ""}: "{remembered.answer}" [{remembered.state}]')
         return remembered.answer
-    ai_answer = ""
+    aiAnswer = ""
     if use_AI and aiClient:
         try:
-            ai_answer = answer_question(aiClient, label_org, question_type=kind, job_description=job_description, user_information_all=user_information_all)
+            aiAnswer = answer_question(aiClient, label_org, question_type=kind, job_description=job_description, user_information_all=user_information_all)
         except Exception as e:
             logger.warning("Failed to get AI answer! %s", e)
-    if ai_answer and isinstance(ai_answer, str) and ai_answer.strip():
-        answer = ai_answer.strip()
+    if aiAnswer and isinstance(aiAnswer, str) and aiAnswer.strip():
+        answer = aiAnswer.strip()
         print_lg(f'AI answered "{label_org}": "{answer}"')
-        answers_memory.remember(label_org, kind, answer, source="ai", job_link=job_link)
+        remembered = answers_memory.remember(label_org, kind, answer, source="ai", job_link=job_link)
+        answers_memory.record_use(remembered, job_link)
         return answer
     return ""
 
@@ -857,6 +859,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             label = label_org.lower()
 
             prev_answer = text.get_attribute("value")
+            # Some questions must never be guessed by memory or the AI even when nothing is
+            # configured; the branch that knows that turns this off.
+            fallbackAllowed = True
             if not prev_answer or overwrite_previous_answers:
                 auth_answer = work_authorization_answer(label)
                 if auth_answer is not None: answer = auth_answer
@@ -873,6 +878,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     # falls through below and types the user's CITY into the email box. There is no
                     # email value in config/personals.py, so leave it for LinkedIn's own prefill
                     # rather than guessing. ponytail: add `email` to personals.py to answer it.
+                    # And never let the AI invent one: a made-up email would be remembered and
+                    # replayed on every later application.
+                    fallbackAllowed = False
                     print_lg(f'No configured answer for the email question "{label_org}". Leaving LinkedIn\'s own value in place.')
                 elif label_has(label, 'city', 'location', 'address'):
                     answer = current_city if current_city else work_location
@@ -915,17 +923,17 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 elif label_has(label, 'zip', 'zipcode', 'postal', 'postcode', 'code'): answer = zipcode
                 elif label_has(label, 'country'): answer = country
                 else: answer = answer_common_questions(label,answer)
-                if answer == "":
+                if answer == "" and fallbackAllowed:
                     answer = answer_from_memory_or_ai(label_org, "text", job_description, job_link)
-                    if answer == "":
-                        # Leave it empty. It used to fall back to `years_of_experience`, so
-                        # "How many years of Kubernetes?", "What is your expected salary?"
-                        # and "How many people did you manage?" were all submitted as the
-                        # user's total years of experience - wrong data on a real
-                        # application. Report it and let the stall guard skip the job.
-                        print_lg(f'No answer for the text question "{label_org}". Leaving it empty - add it to config/questions.py.')
-                        randomly_answered_questions.add((label_org, "text"))
-                        unanswered_questions.add(label_org)
+                if answer == "":
+                    # Leave it empty. It used to fall back to `years_of_experience`, so
+                    # "How many years of Kubernetes?", "What is your expected salary?"
+                    # and "How many people did you manage?" were all submitted as the
+                    # user's total years of experience - wrong data on a real
+                    # application. Report it and let the stall guard skip the job.
+                    print_lg(f'No answer for the text question "{label_org}". Leaving it empty - add it to config/questions.py.')
+                    randomly_answered_questions.add((label_org, "text"))
+                    unanswered_questions.add(label_org)
                 text.clear()
                 human_type(text, answer)
                 if do_actions:
