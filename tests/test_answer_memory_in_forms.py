@@ -8,61 +8,19 @@ are logged, and sensitive questions never reach memory or the AI.
 License: MIT  (https://opensource.org/license/mit)
 '''
 
-import sys
 import types
 
 import pytest
-from selenium.common.exceptions import NoSuchElementException
 
 from modules.answers_memory import AnswerMemory
+from tests.fakes import (FakeElement, FakeCheckbox, FakeMouse, import_bot, text_form, dropdown,
+                         radio_group, checkbox_question)
 
 
 @pytest.fixture(scope="module")
 def bot():
-    '''Import runAiBot with a stubbed browser session, so importing it never opens Chrome.'''
-    fake_chrome = types.ModuleType("modules.open_chrome")
-    fake_chrome.options = fake_chrome.driver = fake_chrome.actions = fake_chrome.wait = None
-    sys.modules["modules.open_chrome"] = fake_chrome
-    import runAiBot
-    return runAiBot
-
-
-class FakeElement:
-    '''Stand-in for a WebElement: `children` maps an XPath/class to what it resolves to.'''
-
-    def __init__(self, text="", value="", children=None):
-        self.text = text
-        self.value = value
-        self.children = children or {}
-
-    def clear(self):
-        self.value = ""
-
-    def send_keys(self, keys):
-        self.value += str(keys)
-
-    def get_attribute(self, name):
-        return self.value if name == "value" else None
-
-    def find_element(self, by, locator):
-        if locator in self.children:
-            return self.children[locator]
-        raise NoSuchElementException(locator)
-
-    def find_elements(self, by, locator):
-        found = self.children.get(locator)
-        if isinstance(found, list):
-            return found
-        return [found] if found else []
-
-
-def text_form(label_text, kind="text"):
-    '''A modal with one text input (or textarea) under `label_text`. Returns (modal, control).'''
-    control = FakeElement()
-    xpath = ".//textarea" if kind == "textarea" else ".//input[@type='text']"
-    question = FakeElement(children={xpath: control, ".//label[@for]": FakeElement(text=label_text)})
-    modal = FakeElement(children={".//div[@data-test-form-element]": [question]})
-    return modal, control
+    '''runAiBot with the browser session stubbed out.'''
+    return import_bot()
 
 
 @pytest.fixture

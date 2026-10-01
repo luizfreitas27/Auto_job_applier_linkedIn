@@ -36,13 +36,18 @@ def test_the_profile_carries_the_configured_facts():
     assert "Most recent employer: Acme" in profile
     assert "Headline: Backend engineer" in profile
     assert "Desired annual salary: 90000" in profile
-    assert "Current annual salary: 70000" in profile
     assert "Notice period: 30 days" in profile
     assert "Legally authorized to work in the country of the job: Yes" in profile
     assert "Will require visa sponsorship: No" in profile
-    assert "Citizenship status: Other" in profile
-    assert "Portfolio or website: https://jane.dev" in profile
     assert "Summary:\nI build APIs." in profile
+
+
+def test_citizenship_current_salary_and_links_stay_out_of_the_profile():
+    '''Not in the spec's list, and citizenship and current pay are sensitive facts the model
+    is told to use "whenever relevant", so they could surface in a free-text answer.'''
+    profile = build_candidate_profile(personals(), questions())
+    for absent in ("Other", "70000", "https://jane.dev", "linkedin.com/in/jane", "Citizenship", "Current annual"):
+        assert absent not in profile
 
 
 def test_contact_details_never_reach_the_profile():
@@ -61,12 +66,11 @@ def test_protected_characteristics_and_the_cover_letter_are_not_included():
 
 def test_blank_settings_are_skipped_not_printed_as_empty():
     profile = build_candidate_profile(personals(middle_name="", current_city=""),
-                                      questions(recent_employer="", linkedin_summary="", website=""))
+                                      questions(recent_employer="", linkedin_summary=""))
     assert "Name: Jane Applicant" in profile
     assert "Location: Lisboa, Portugal" in profile
     assert "Most recent employer" not in profile
     assert "Summary" not in profile
-    assert "Portfolio" not in profile
     assert ": \n" not in profile and not profile.endswith(":")
 
 
@@ -86,6 +90,7 @@ def test_missing_settings_in_an_old_config_do_not_break_the_profile():
     assert profile == "Name: Jane"
 
 
-def test_the_live_config_modules_are_the_default_source():
-    profile = build_candidate_profile()
-    assert isinstance(profile, str) and "Name:" in profile
+def test_the_live_config_modules_are_the_default_source(monkeypatch):
+    import config.personals as personals
+    monkeypatch.setattr(personals, "first_name", "Livewire")
+    assert "Name: Livewire" in build_candidate_profile()

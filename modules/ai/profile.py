@@ -18,7 +18,7 @@ from __future__ import annotations
 from types import ModuleType
 
 
-def _text(value) -> str:
+def _text(value: object | None) -> str:
     '''A setting as prompt text, or "" when it is unset. Numbers are kept as typed (no quotes).'''
     if value is None:
         return ""
@@ -36,34 +36,38 @@ def build_candidate_profile(personals: ModuleType | None = None, questions: Modu
     if questions is None:
         import config.questions as questions
 
-    get = lambda module, name: _text(getattr(module, name, ""))
+    def setting(module: ModuleType, name: str) -> str:
+        '''One config setting as prompt text, "" when missing or blank.'''
+        return _text(getattr(module, name, ""))
 
-    fullName = " ".join(part for part in (get(personals, "first_name"), get(personals, "middle_name"),
-                                          get(personals, "last_name")) if part)
-    location = ", ".join(part for part in (get(personals, "current_city"), get(personals, "state"),
-                                           get(personals, "country")) if part)
-    noticeDays = get(questions, "notice_period")
+    fullName = " ".join(part for part in (setting(personals, "first_name"), setting(personals, "middle_name"),
+                                          setting(personals, "last_name")) if part)
+    location = ", ".join(part for part in (setting(personals, "current_city"), setting(personals, "state"),
+                                           setting(personals, "country")) if part)
+    noticeDays = setting(questions, "notice_period")
 
+    # Exactly the facts the spec lists. Citizenship status and current salary are deliberately
+    # NOT here: they are sensitive, and the prompt tells the model to use applicant facts
+    # "whenever relevant", so anything in this block can surface in a free-text answer.
     rows = [
         ("Name", fullName),
         ("Location", location),
-        ("Years of professional experience", get(questions, "years_of_experience")),
-        ("Most recent employer", get(questions, "recent_employer")),
-        ("Headline", get(questions, "linkedin_headline")),
-        ("Desired annual salary", get(questions, "desired_salary")),
-        ("Current annual salary", get(questions, "current_ctc")),
+        ("Years of professional experience", setting(questions, "years_of_experience")),
+        ("Most recent employer", setting(questions, "recent_employer")),
+        ("Headline", setting(questions, "linkedin_headline")),
+        ("Desired annual salary", setting(questions, "desired_salary")),
         ("Notice period", f"{noticeDays} days" if noticeDays else ""),
-        ("Legally authorized to work in the country of the job", get(questions, "legally_authorized")),
-        ("Will require visa sponsorship", get(questions, "require_visa")),
-        ("Citizenship status", get(questions, "us_citizenship")),
-        ("Portfolio or website", get(questions, "website")),
+        ("Legally authorized to work in the country of the job", setting(questions, "legally_authorized")),
+        ("Will require visa sponsorship", setting(questions, "require_visa")),
     ]
     lines = [f"{label}: {value}" for label, value in rows if value]
 
-    summary = get(questions, "linkedin_summary")
+    summary = setting(questions, "linkedin_summary")
     if summary:
         lines.append(f"Summary:\n{summary}")
-    extra = get(questions, "user_information_all")
-    if extra and extra.lower() != "user information":        # the shipped placeholder says nothing
+    extra = setting(questions, "user_information_all")
+    # ponytail: "User Information" is the text config/questions.py ships in user_information_all;
+    # compare against the module default instead if that placeholder ever changes.
+    if extra and extra.lower() != "user information":
         lines.append(f"Additional information:\n{extra}")
     return "\n".join(lines)

@@ -111,6 +111,38 @@ def test_answer_question_select_returns_empty_when_no_option_is_named(raw):
     assert answer == ""
 
 
+class _RecordingModel(_StubModel):
+    '''Keeps the prompt it was invoked with.'''
+    def __init__(self, output):
+        super().__init__(output)
+        self.prompts = []
+
+    def invoke(self, prompt):
+        self.prompts.append(prompt)
+        return super().invoke(prompt)
+
+
+def test_the_prompt_carries_the_candidate_profile_and_the_options():
+    model = _RecordingModel("Hybrid")
+    client = C.AIClient(model)
+    C.answer_question(client, "Preferred work style", options=["Remote", "Hybrid"],
+                      question_type="single_select", job_description="We ship daily.",
+                      user_information_all="Name: Jane Applicant\nYears of professional experience: 6")
+    prompt = model.prompts[0]
+    assert "Name: Jane Applicant" in prompt and "Years of professional experience: 6" in prompt
+    assert "Preferred work style" in prompt
+    assert "- Remote" in prompt and "- Hybrid" in prompt
+    assert "We ship daily." in prompt
+
+
+def test_a_rejected_paraphrase_is_logged_with_the_options(log_records):
+    client = C.AIClient(_StubModel("Yes, absolutely"))
+    assert C.answer_question(client, "Willing to relocate?", options=["Yes", "No"],
+                             question_type="single_select") == ""
+    warnings = [r.getMessage() for r in log_records if r.levelname == "WARNING"]
+    assert any("Yes, absolutely" in w and "Willing to relocate?" in w and "'Yes'" in w for w in warnings)
+
+
 def test_answer_question_none_client_is_safe():
     assert C.answer_question(None, "anything") == ""
 

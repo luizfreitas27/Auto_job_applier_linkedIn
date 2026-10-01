@@ -109,7 +109,8 @@ Cover Letter
 # key skills, location, work authorization, and so on. Use \n for line breaks.
 # Free-text ADDITION to the profile the AI is given. The tool already builds a profile from
 # the settings in personals.py and this file (name, location, experience, salary, notice
-# period, employer, headline, summary, work authorization); put here anything those miss.
+# period, employer, headline, summary, work authorization, visa need); put here anything those
+# miss. Phone, email, street, citizenship status and current salary are never sent.
 user_information_all = """
 User Information
 """

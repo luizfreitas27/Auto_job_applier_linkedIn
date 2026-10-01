@@ -108,9 +108,10 @@ fallback the form branches call after the configured-answer heuristics fail: sen
 (`is_sensitive_question`, whole-word on `sensitive_terms`) → memory lookup (exact, then
 `difflib` ≥ 0.92 within the same kind, logged) → AI, whose answer is remembered as pending.
 Select and radio branches call `option_from_memory_or_ai()` only when there is no configured
-answer (`not answer`): memory text snapped to this form's options via `match_answer_to_option`,
-then the AI shown the non-placeholder options, accepted only verbatim. Checkboxes tick only from an `approved` entry; an unrecognised
-unticked box is remembered as pending with source `form`. The module itself knows nothing
+answer (`not answer`): memory text snapped to this form's options via
+`match_answer_to_option`, then the AI shown the non-placeholder options, accepted only
+verbatim. Both fallbacks share `ask_ai()`. Checkboxes tick only from an `approved` entry; an
+unrecognised unticked box is remembered as pending with source `form`. The module itself knows nothing
 about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
 with `monkeypatch.setattr(bot, "answers_memory", ...)`.
 
@@ -123,7 +124,8 @@ structured output and falls back to plain JSON parsing. Prompts live in `prompts
 `answer_question(..., options=[...], question_type="single_select")` returns the option the
 model named exactly (case/quotes tolerated) or `""`; never a paraphrase. The applicant text
 the AI sees is `profile.build_candidate_profile()`, assembled from the config modules
-(never phone, street, zip or email) plus `user_information_all`.
+(never phone, street, zip, email, citizenship status or current salary) plus
+`user_information_all`.
 
 ### Logging
 

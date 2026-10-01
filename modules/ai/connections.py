@@ -243,6 +243,9 @@ def _build_answer_graph(model):
         for opt in options:                       # case-insensitive
             if low == opt.lower():
                 return {"answer": opt}
+        if raw:
+            logger.warning('AI answered "%s" to "%s", which is none of the options %s. Rejected.',
+                           raw, state.get("question") or "", list(options))
         return {"answer": ""}
 
     def route(state: _AnswerState) -> str:
