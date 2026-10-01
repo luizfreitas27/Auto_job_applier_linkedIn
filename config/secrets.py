@@ -38,7 +38,7 @@ use_AI = False                           # True or False (case-sensitive)
 ai_provider = "openai"                    # "openai", "gemini", or "deepseek"
 
 # The model name to use. Type whatever your provider offers, for example:
-#   OpenAI:  "gpt-4o-mini", "gpt-4o", "gpt-5-mini"
+#   OpenAI:  "gpt-5.6-sol", "gpt-5.5", "gpt-4o-mini"
 #   Local:   "llama-3.2-3b-instruct", "qwen2.5:latest"
 #   Gemini:  "gemini-2.5-flash", "gemini-2.5-pro"
 llm_model = "gpt-4o-mini"

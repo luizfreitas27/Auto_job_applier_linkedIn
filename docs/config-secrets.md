@@ -55,7 +55,7 @@ options covers every provider.
 |---|---|
 | `use_AI` | Master switch. `True` or `False` |
 | `ai_provider` | `"openai"`, `"gemini"`, or `"deepseek"`. Use `"openai"` for OpenAI **or any OpenAI-compatible server**, including local ones like [Ollama](https://ollama.com/), [LM Studio](https://lmstudio.ai/) and vLLM. `"deepseek"` also behaves like `"openai"`. `"gemini"` uses your Google API key and ignores `llm_api_url` |
-| `llm_model` | The model name your provider offers. OpenAI: `"gpt-4o-mini"`, `"gpt-4o"`, `"gpt-5-mini"`. Local: `"llama-3.2-3b-instruct"`, `"qwen2.5:latest"`. Gemini: `"gemini-2.5-flash"`, `"gemini-2.5-pro"` |
+| `llm_model` | The model name your provider offers. OpenAI: `"gpt-5.6-sol"`, `"gpt-5.5"`, `"gpt-4o-mini"`. Local: `"llama-3.2-3b-instruct"`, `"qwen2.5:latest"`. Gemini: `"gemini-2.5-flash"`, `"gemini-2.5-pro"` |
 | `llm_api_key` | Your provider's API key. For local servers any placeholder works — leave it as `"not-needed"` |
 | `llm_api_url` | Base URL of the server. Used by the `"openai"` provider family only. OpenAI: `"https://api.openai.com/v1/"`. LM Studio: `"http://localhost:1234/v1/"`. Ollama: `"http://localhost:11434/v1/"`. DeepSeek: `"https://api.deepseek.com/v1"` |
 | `llm_temperature` | Sampling temperature. Leave as `None` to use the model's own default — **some newer models only allow their default**. Set a number like `0` or `0.3` to override |
