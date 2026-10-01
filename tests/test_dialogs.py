@@ -140,7 +140,8 @@ def test_dialogs_are_delegated_when_pyautogui_works(monkeypatch):
     ]
 
 
-def test_keyword_arguments_reach_the_backend(monkeypatch):
+def test_named_arguments_reach_the_backend(monkeypatch):
+    '''runAiBot calls alert(text=..., title=..., button=...) in one place; keep the names.'''
     fake = FakePyautogui()
     monkeypatch.setattr(dialogs, "_import_pyautogui", lambda: fake)
     dialogs.alert(text="t", title="T", button="Okay")
@@ -167,7 +168,7 @@ def test_a_backend_that_crashes_mid_dialog_degrades_instead_of_raising(monkeypat
 
 
 # ------------------------------- explicit suppression -----------------------
-def test_set_enabled_false_suppresses_even_with_a_working_backend(monkeypatch, log_records):
+def test_set_enabled_false_suppresses_dialogs_even_with_a_working_backend(monkeypatch, log_records):
     '''Non-interactive runs (panel subprocess, run_in_background) must never block on a modal.'''
     fake = FakePyautogui()
     monkeypatch.setattr(dialogs, "_import_pyautogui", lambda: fake)
@@ -175,9 +176,20 @@ def test_set_enabled_false_suppresses_even_with_a_working_backend(monkeypatch, l
 
     assert dialogs.alert("x", "Title") is None
     assert dialogs.confirm("y", "Title2", ["a", "b"]) is None
-    dialogs.press("shiftright")
 
     assert fake.calls == []
     text = "\n".join(messages(log_records))
     assert "non-interactive" in text
     assert "Title: x" in text and "Title2: y" in text
+
+
+def test_the_keep_awake_press_still_fires_when_dialogs_are_disabled(monkeypatch):
+    '''
+    `keep_screen_awake` matters most in unattended runs, which are exactly the ones that
+    disable dialogs. Before the shim, suppression only touched alert/confirm; keep that.
+    '''
+    fake = FakePyautogui()
+    monkeypatch.setattr(dialogs, "_import_pyautogui", lambda: fake)
+    dialogs.set_enabled(False)
+    dialogs.press("shiftright")
+    assert fake.calls == [("press", "shiftright")]

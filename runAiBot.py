@@ -1385,7 +1385,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     if wait_xp_click(modal, submit_button_xpath, 2, scrollTop=True): 
                                         date_applied = datetime.now()
                                         if not wait_span_click(driver, "Done", 2): actions.send_keys(Keys.ESCAPE).perform()
-                                    elif errored != "stuck" and cur_pause_before_submit and "Yes" in dialogs.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]):
+                                    elif errored != "stuck" and cur_pause_before_submit and "Yes" in (dialogs.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]) or ""):
                                         date_applied = datetime.now()
                                         wait_span_click(driver, "Done", 2)
                                     else:
