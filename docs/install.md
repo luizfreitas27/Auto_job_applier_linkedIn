@@ -34,10 +34,12 @@ https://youtu.be/f9rdz74e1lM (recommended to watch at 2x speed).
    Download the installer from https://www.google.com/chrome.
 
 5. **Chrome Driver is taken care of for you.** `auto_manage_driver = True` (the default in
-   `config/settings.py`) downloads the matching driver automatically. If you would rather
-   manage it yourself, set it to `False` and place the matching
-   [Chrome Driver](https://googlechromelabs.github.io/chrome-for-testing/) where Chrome is
-   installed.
+   `config/settings.py`) uses [SeleniumBase](https://seleniumbase.io/) in UC Mode, which
+   downloads a driver matching your Chrome (on Windows, macOS including Apple Silicon, and
+   Linux) and keeps the browser looking like a normal one. If you would rather manage the
+   driver yourself, set it to `False`: the tool then uses plain Selenium, with no
+   anti-detection, and Selenium Manager resolves the
+   [Chrome Driver](https://googlechromelabs.github.io/chrome-for-testing/).
 
 6. **Configure the tool** — see [Configuration](configuration.md).
 
