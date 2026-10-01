@@ -99,6 +99,17 @@ ordered fallback list, login locators are module constants near the top. `tests/
 are captured LinkedIn DOM snapshots and `tests/test_selectors_groundtruth.py` asserts the
 locators used in code still match them; update both together when LinkedIn changes.
 
+### Answer memory (`modules/answers_memory.py`)
+
+`answers_memory.json` at the project root (gitignored) holds every answer given to an
+unrecognised question: normalised label + control kind → answer, source (`ai`/`user`), state
+(`pending`/`approved`), uses, last job link. `runAiBot.answer_from_memory_or_ai()` is the single
+fallback the form branches call after the configured-answer heuristics fail: sensitive check
+(`is_sensitive_question`, whole-word on `sensitive_terms`) → memory lookup (exact, then
+`difflib` ≥ 0.92 within the same kind, logged) → AI, whose answer is remembered as pending.
+The module itself knows nothing about sensitivity; the bot gates before calling it. Tests
+wire a temp-file `AnswerMemory` in with `monkeypatch.setattr(bot, "answers_memory", ...)`.
+
 ### AI layer (`modules/ai/`)
 
 Provider-agnostic via LangChain `init_chat_model` + a small LangGraph pipeline. Only two

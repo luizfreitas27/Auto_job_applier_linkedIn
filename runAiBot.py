@@ -46,6 +46,7 @@ from modules.helpers import *
 from modules.clickers_and_finders import *
 from modules.validator import validate_config
 from modules import dialogs
+from modules.answers_memory import AnswerMemory
 
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
@@ -117,6 +118,9 @@ notice_period = str(notice_period)
 
 aiClient = None
 about_company_for_ai = None  # filled in later, once we're processing a specific job
+
+# The answer memory (answers_memory.json at the project root). Loaded on first use.
+answers_memory = AnswerMemory()
 
 # Dry run: fill everything in, reach the Review step, then discard instead of submitting.
 # Belongs in config/settings.py; read defensively so an older config keeps working.
@@ -453,6 +457,16 @@ attestation_terms = ['certify', 'certifies', 'certification', 'attest', 'attesta
                      'accurate', 'accuracy', 'true and complete', 'eligible', 'eligibility',
                      'citizen', 'citizenship', 'clearance', 'i understand', 'i confirm']
 
+# Sensitive questions: answered from configured answers ONLY, never by the AI and never from
+# the answer memory. A wrong guess here misstates the applicant's legal status, pay or
+# protected characteristics on a real application, so these families are gated before
+# either fallback is consulted.
+salary_terms = ['salary', 'salaries', 'compensation', 'ctc', 'pay', 'remuneration', 'wage', 'wages']
+disability_terms = ['disability', 'disabilities', 'disabled', 'handicap', 'handicapped']
+veteran_terms = ['veteran', 'veterans', 'military']
+sensitive_terms = (visa_terms + authorization_terms + citizenship_terms + clearance_terms
+                   + salary_terms + disability_terms + veteran_terms)
+
 # `years_of_experience` is a TOTAL, so it only answers a question that asks for the total.
 total_experience_terms = ['years of experience', 'years experience', 'work experience',
                           'working experience', 'professional experience', 'total experience',
@@ -477,6 +491,41 @@ def work_authorization_answer(label: str) -> str | None:
     if find_bad_word(label, authorization_terms): return legally_authorized
     if find_bad_word(label, citizenship_terms): return us_citizenship
     return None
+
+
+def is_sensitive_question(label: str) -> bool:
+    '''
+    True for a work-authorization, visa, citizenship, clearance, salary, disability or
+    veteran question. Whole-word matching, like every other label test here.
+    '''
+    return find_bad_word(label, sensitive_terms) is not None
+
+
+def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | None, job_link: str | None) -> str:
+    '''
+    The fallback for an unrecognised question in a `kind` control: the answer memory first,
+    then the AI, whose answer is remembered as pending for the review queue. Returns "" when
+    neither has anything, or when the question is sensitive (those are never guessed).
+    '''
+    if is_sensitive_question(label_org):
+        return ""
+    remembered, approximate = answers_memory.lookup(label_org, kind)
+    if remembered is not None:
+        answers_memory.record_use(remembered, job_link)
+        print_lg(f'Memory answered "{label_org}"{" (approximate match)" if approximate else ""}: "{remembered.answer}" [{remembered.state}]')
+        return remembered.answer
+    ai_answer = ""
+    if use_AI and aiClient:
+        try:
+            ai_answer = answer_question(aiClient, label_org, question_type=kind, job_description=job_description, user_information_all=user_information_all)
+        except Exception as e:
+            logger.warning("Failed to get AI answer! %s", e)
+    if ai_answer and isinstance(ai_answer, str) and ai_answer.strip():
+        answer = ai_answer.strip()
+        print_lg(f'AI answered "{label_org}": "{answer}"')
+        answers_memory.remember(label_org, kind, answer, source="ai", job_link=job_link)
+        return answer
+    return ""
 
 
 def match_answer_to_option(answer: str | None, option_texts: list[str]) -> int | None:
@@ -656,7 +705,7 @@ def answer_common_questions(label: str, answer: str | None) -> str | None:
 
 
 # Function to answer the questions for Easy Apply
-def answer_questions(modal: WebElement, questions_list: set, work_location: str, job_description: str | None = None ) -> set:
+def answer_questions(modal: WebElement, questions_list: set, work_location: str, job_description: str | None = None, job_link: str | None = None) -> set:
     # Get all questions from the page
      
     # The container class churns (it is `fb-dash-form-element` today, paired with a random
@@ -867,16 +916,8 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 elif label_has(label, 'country'): answer = country
                 else: answer = answer_common_questions(label,answer)
                 if answer == "":
-                    ai_answer = ""
-                    if use_AI and aiClient:
-                        try:
-                            ai_answer = answer_question(aiClient, label_org, question_type="text", job_description=job_description, user_information_all=user_information_all)
-                        except Exception as e:
-                            logger.warning("Failed to get AI answer! %s", e)
-                    if ai_answer and isinstance(ai_answer, str) and ai_answer.strip():
-                        answer = ai_answer.strip()
-                        print_lg(f'AI answered "{label_org}": "{answer}"')
-                    else:
+                    answer = answer_from_memory_or_ai(label_org, "text", job_description, job_link)
+                    if answer == "":
                         # Leave it empty. It used to fall back to `years_of_experience`, so
                         # "How many years of Kubernetes?", "What is your expected salary?"
                         # and "How many people did you manage?" were all submitted as the
@@ -906,16 +947,8 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 if label_has(label, 'summary'): answer = linkedin_summary
                 elif label_has(label, 'cover'): answer = cover_letter
                 if answer == "":
-                    ai_answer = ""
-                    if use_AI and aiClient:
-                        try:
-                            ai_answer = answer_question(aiClient, label_org, question_type="textarea", job_description=job_description, user_information_all=user_information_all)
-                        except Exception as e:
-                            logger.warning("Failed to get AI answer! %s", e)
-                    if ai_answer and isinstance(ai_answer, str) and ai_answer.strip():
-                        answer = ai_answer.strip()
-                        print_lg(f'AI answered "{label_org}": "{answer}"')
-                    else:
+                    answer = answer_from_memory_or_ai(label_org, "textarea", job_description, job_link)
+                    if answer == "":
                         randomly_answered_questions.add((label_org, "textarea"))
                         unanswered_questions.add(label_org)
             text_area.clear()
@@ -1339,7 +1372,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                         screenshot_name = screenshot(driver, job_id, "Failed at questions")
                                         errored = "stuck"
                                         raise Exception("Seems like stuck in a continuous loop of next, probably because of new questions.")
-                                    questions_list = answer_questions(modal, questions_list, work_location, job_description=description)
+                                    questions_list = answer_questions(modal, questions_list, work_location, job_description=description, job_link=job_link)
                                     # `pause_at_failed_question` users want the manual prompt the
                                     # counter above gives them, so only bail out when it is off.
                                     if not pause_at_failed_question and questions_are_stalled(blocked_questions):
