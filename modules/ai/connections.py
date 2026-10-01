@@ -39,11 +39,7 @@ import config.secrets as cfg
 from config.settings import showAiErrorAlerts
 from modules.helpers import print_lg, critical_error_log, logger, convert_to_json
 from modules.ai.prompts import extract_skills_prompt, ai_answer_prompt
-
-try:
-    from pyautogui import confirm
-except Exception:  # pyautogui may be unavailable in headless environments
-    confirm = None
+from modules.dialogs import confirm      # degrades to a log line when there is no desktop
 
 
 # Whether to keep popping up AI error dialogs (disabled once the user asks to pause them).
@@ -53,13 +49,10 @@ _alerts_enabled = bool(showAiErrorAlerts)
 def _ai_error_alert(message: str, error: Exception, title: str = "AI Error") -> None:
     '''Log an AI error and (optionally) show a dismissible dialog, mirroring the rest of the tool.'''
     global _alerts_enabled
-    if _alerts_enabled and confirm is not None:
-        try:
-            choice = confirm(f"{message}\n\n{error}\n", title, ["Pause AI alerts", "Okay, continue"])
-            if choice == "Pause AI alerts":
-                _alerts_enabled = False
-        except Exception:
-            pass
+    if _alerts_enabled:
+        choice = confirm(f"{message}\n\n{error}\n", title, ["Pause AI alerts", "Okay, continue"])
+        if choice == "Pause AI alerts":
+            _alerts_enabled = False
     critical_error_log(message, error)
 
 

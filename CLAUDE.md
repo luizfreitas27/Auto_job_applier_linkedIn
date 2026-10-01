@@ -25,11 +25,9 @@ python runAiBot.py             # the bot directly (opens Chrome at import time)
 `requirements.txt` is fully pinned; `pip install -r requirements.txt -r requirements-dev.txt`
 for a manual setup. There is no linter configured.
 
-Test environment caveat: `pyautogui` connects to an X display and needs `tkinter` at import
-time, so every test that imports `runAiBot` or `modules/ai/connections.py` errors out on a
-headless or Wayland machine without `python3-tk` and `~/.Xauthority`. Those errors are
-environmental, not regressions. `tests/test_app_integration.py` and `tests/test_helpers.py`
-run anywhere. The `live` marker (one OpenAI smoke test) runs only when `OPENAI_API_KEY` is set.
+The suite runs on any machine, including one without a display or `tkinter`, and in GitHub
+Actions (`.github/workflows/tests.yml`). The `live` marker (one OpenAI smoke test) runs only
+when `OPENAI_API_KEY` is set.
 
 ## Architecture
 
@@ -40,6 +38,11 @@ run anywhere. The `live` marker (one OpenAI smoke test) runs only when `OPENAI_A
   Tests stub it with `sys.modules["modules.open_chrome"] = types.ModuleType(...)` before
   importing `runAiBot` (see `tests/test_runaibot_fixes.py`).
 - `modules/helpers.py` calls `setup_logging()` at import.
+- `modules/dialogs.py` is the **only** module allowed to import `pyautogui`, and it does so
+  lazily on the first dialog. `pyautogui` opens the X display and imports `tkinter` at import
+  time, so a bare import anywhere else breaks headless machines and the test suite
+  (`tests/test_dialogs.py` enforces this). Call `dialogs.alert/confirm/press`; they degrade
+  to a log line when there is no desktop or after `dialogs.set_enabled(False)`.
 - Every `config/*.py` ends with `_overrides.apply(__name__, globals())`, which overlays
   `user_config.json` onto the module's globals.
 - `app.py` builds `DEFAULTS` at import by temporarily disabling the override loader and
@@ -74,8 +77,8 @@ user's config, `runAiBot.py` reads them defensively with `globals().get("name", 
   responses. Sending the mask back on save means "keep the stored value". Templates hardcode
   the same header and mask string.
 - `runAiBot.py` detects a non-interactive run (`run_in_background` or stdout not a TTY, which
-  is the case under the panel) and replaces `pyautogui.alert/confirm` with log lines, because
-  those are blocking Tk modals nobody can click.
+  is the case under the panel) and calls `dialogs.set_enabled(False)`, because desktop
+  dialogs are blocking Tk modals nobody can click there.
 - `modules/updater.py`: compares `VERSION` with the upstream raw file and offers
   `git pull --ff-only`; it refuses unless `origin` points at the upstream repo, so in this
   fork the update button does nothing.
