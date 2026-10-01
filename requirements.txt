@@ -5,9 +5,8 @@
 # code that was reviewed, not whatever PyPI serves that day. Bump deliberately.
 
 # Browser automation
-selenium==4.50.0
-undetected-chromedriver==3.5.5   # auto-downloads a matching Chrome driver (auto_manage_driver = True)
-setuptools==84.0.0               # required by undetected-chromedriver on some Python versions
+seleniumbase==4.54.13            # UC Mode: anti-detection + driver management (auto_manage_driver = True); see docs/adr/0001
+selenium==4.49.0                 # the exact version seleniumbase 4.54.13 pins; bump both together
 
 # Desktop dialogs / prompts
 pyautogui==0.9.54

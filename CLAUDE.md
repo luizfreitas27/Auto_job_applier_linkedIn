@@ -35,6 +35,12 @@ when `OPENAI_API_KEY` is set.
 
 - `modules/open_chrome.py` **launches Chrome when imported**. `runAiBot.py` does
   `from modules.open_chrome import *` and uses `driver`, `wait`, `actions` as module globals.
+  With `auto_manage_driver = True` it uses SeleniumBase UC Mode (`seleniumbase.Driver(uc=True,
+  ...)`, imported lazily; ADR 0001), which returns a plain Selenium WebDriver; `False` is plain
+  Selenium via Selenium Manager with no anti-detection. `uc_driver_kwargs()` and
+  `plain_selenium_options()` are the testable seams. `seleniumbase` pins `selenium` and
+  `pytest` exactly (pytest 9 on Python 3.11+); bump them together, and note pytest 9 attaches
+  its capture handlers to non-propagating loggers during a test.
   Tests stub it with `sys.modules["modules.open_chrome"] = types.ModuleType(...)` before
   importing `runAiBot` (see `tests/test_runaibot_fixes.py`).
 - `modules/helpers.py` calls `setup_logging()` at import.
