@@ -108,8 +108,10 @@ empty when the pause began count; stay on the same page of the form until you cl
 **Sensitive questions never use this**: work authorization, visa, citizenship, security
 clearance, salary, disability and veteran status are answered only from the settings above.
 
-The file is yours and is ignored by git. Delete a remembered answer to make the tool treat that question
-as new again, or delete the file to start over.
+Review them in the **Answers** tab of the control panel: filter pending or approved, correct the
+text and approve, or delete. The tab title shows how many are pending, and the run summary
+reports the same count. The file is yours and is ignored by git; delete a remembered answer to
+make the tool treat that question as new again, or delete the file to start over.
 
 ## Not yet implemented
 

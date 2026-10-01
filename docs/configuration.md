@@ -5,7 +5,8 @@ to change it, and they work together:
 
 - **The control panel** (`python app.py`, or the `start.*` launcher) — a local web page
   with the common settings laid out in tabs: **Account, Profile, Search, Filters, Run
-  settings**. What you save there is written to `user_config.json` at the project root.
+  settings**, plus **Run** (start, stop, log, history) and **Answers** (the review queue of
+  answers the tool learned, see [questions](config-questions.md)). What you save there is written to `user_config.json` at the project root.
 - **Editing `config/*.py` directly** — the classic route, and the only route for the
   handful of settings the control panel does not expose.
 
