@@ -15,6 +15,18 @@ already exist there — so the panel can never introduce a setting the code does
 about. If `user_config.json` does not exist, everything comes from the `.py` files and the
 tool behaves exactly as it always has. Nothing is ever uploaded anywhere.
 
+## Schedule windows
+
+The **Run** tab can start and stop the tool for you. Add one or more windows (weekdays, start
+and end time, in your computer's local time) and save. When a window begins the panel starts
+the tool if it is not running; when the window ends it stops it. A window that ends before it
+starts runs overnight. Manual Start and Stop keep working; a Stop you click inside a window
+holds until the next window begins.
+
+Windows only fire **while the control panel is open**: the scheduler is part of the panel
+process, so keep its window (and the launcher) running. They are stored in the `schedule`
+section of `user_config.json`.
+
 ## Do it in this order
 
 | Step | File | What goes in it |

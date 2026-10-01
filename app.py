@@ -38,6 +38,7 @@ import config_schema
 from config import _overrides
 from modules import updater
 from modules.answers_memory import AnswerMemory, STATES
+from modules import schedule as schedule_windows
 
 app = Flask(__name__)
 
@@ -473,14 +474,15 @@ def api_save_config():
     return jsonify(_mask_secrets(current))
 
 
-@app.route('/api/run', methods=['POST'])
-def api_run():
-    '''Starts the bot as a subprocess if it isn't already running.'''
+def start_bot() -> tuple[dict, int]:
+    '''
+    Start the bot as a subprocess unless it is already running. Returns (status, http code);
+    the Run tab's Start button and the scheduler both come through here.
+    '''
     global _bot_proc
     with _bot_lock:
         if _is_running():
-            return jsonify({"running": True, "pid": _bot_proc.pid,
-                            "message": "The tool is already running."})
+            return {"running": True, "pid": _bot_proc.pid, "message": "The tool is already running."}, 200
         try:
             # Truncate the log at the start of each run.
             log_file = open(LOG_PATH, "w", encoding="utf-8")
@@ -495,25 +497,37 @@ def api_run():
                 popen_kwargs["start_new_session"] = True
             _bot_proc = subprocess.Popen(_bot_command(), **popen_kwargs)
         except Exception as err:
-            return jsonify({"running": False, "error": str(err)}), 500
+            return {"running": False, "error": str(err)}, 500
         try:
             with open(PID_PATH, "w", encoding="utf-8") as pid_file:
                 pid_file.write(str(_bot_proc.pid))
         except OSError:
             pass
-        return jsonify({"running": True, "pid": _bot_proc.pid})
+        return {"running": True, "pid": _bot_proc.pid}, 200
 
 
-@app.route('/api/stop', methods=['POST'])
-def api_stop():
-    '''Stops the running bot subprocess (and its children where possible).'''
+def stop_bot() -> dict:
+    '''Stop the bot subprocess (and its children where possible). Idempotent.'''
     global _bot_proc
     with _bot_lock:
         if _bot_proc is not None:
             _terminate(_bot_proc)
             _bot_proc = None
         _remove_pid_file()
-        return jsonify({"running": False})
+        return {"running": False}
+
+
+@app.route('/api/run', methods=['POST'])
+def api_run() -> tuple:
+    '''Starts the bot as a subprocess if it isn't already running.'''
+    status, code = start_bot()
+    return jsonify(status), code
+
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop() -> Response:
+    '''Stops the running bot subprocess (and its children where possible).'''
+    return jsonify(stop_bot())
 
 
 @app.route('/api/status', methods=['GET'])
@@ -624,6 +638,99 @@ def api_delete_answers_in_state() -> Response | tuple:
 
 
 # ===========================================================================
+# Schedule windows (see modules/schedule.py). Stored in the "schedule" section
+# of user_config.json; the override loader ignores sections that are not config
+# modules, so this lives beside the settings without touching them.
+# ===========================================================================
+SCHEDULER_INTERVAL_SECONDS = 30
+_schedule_active_before: bool | None = None       # what the last scheduler tick saw; None before the first
+_scheduler_thread: threading.Thread | None = None
+
+
+def load_schedule() -> list:
+    '''The configured windows, or [] when none or unreadable (a bad file must not stop the panel).'''
+    raw = _overrides.load_user_config().get("schedule", {})
+    try:
+        return schedule_windows.parse_windows(raw.get("windows") if isinstance(raw, dict) else None)
+    except ValueError:
+        return []
+
+
+def save_schedule(windows: list) -> None:
+    '''Write the windows into the "schedule" section of user_config.json (read-modify-write).'''
+    current = _overrides.load_user_config()
+    current["schedule"] = {"windows": [window.as_dict() for window in windows]}
+    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as file:
+        json.dump(current, file, indent=2, ensure_ascii=False)
+
+
+@app.route('/api/schedule', methods=['GET'])
+def api_get_schedule() -> Response:
+    '''The schedule windows and whether one is active right now.'''
+    windows = load_schedule()
+    return jsonify({"windows": [window.as_dict() for window in windows],
+                    "active_now": schedule_windows.window_is_active(windows, datetime.now()),
+                    "interval_seconds": SCHEDULER_INTERVAL_SECONDS})
+
+
+@app.route('/api/schedule', methods=['POST'])
+def api_save_schedule() -> Response | tuple:
+    '''Replace the schedule windows. Body: {"windows": [{"days": [...], "start": "HH:MM", "end": "HH:MM"}]}.'''
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": 'Expected a JSON object with a "windows" list'}), 400
+    try:
+        windows = schedule_windows.parse_windows(payload.get("windows", []))
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+    try:
+        save_schedule(windows)
+    except OSError as err:
+        return jsonify({"error": f"Could not save the schedule: {err}"}), 500
+    return jsonify({"windows": [window.as_dict() for window in windows]})
+
+
+def scheduler_tick(now: datetime | None = None) -> str | None:
+    '''
+    One pass of the scheduler: start the bot on entering a window, stop it on leaving one.
+    Edge-triggered, so a bot stopped by hand or finished on its own inside a window is left
+    alone until the next window begins. Returns the action taken, for the log and the tests.
+    '''
+    global _schedule_active_before
+    activeNow = schedule_windows.window_is_active(load_schedule(), now or datetime.now())
+    action = schedule_windows.decide(activeNow, _schedule_active_before)
+    _schedule_active_before = activeNow
+    if action == "start":
+        status, _ = start_bot()
+        print("Schedule window began: %s" % ("the tool is already running." if status.get("message") else
+                                             "started the tool." if status.get("running") else
+                                             "could not start the tool: %s" % status.get("error")), flush=True)
+    elif action == "stop":
+        stop_bot()
+        print("Schedule window ended: stopped the tool.", flush=True)
+    return action
+
+
+def _scheduler_loop() -> None:
+    '''Run scheduler_tick forever, every SCHEDULER_INTERVAL_SECONDS. Errors are printed, never fatal.'''
+    import time
+    while True:
+        try:
+            scheduler_tick()
+        except Exception as err:
+            print("Scheduler error: %s" % err, flush=True)
+        time.sleep(SCHEDULER_INTERVAL_SECONDS)
+
+
+def start_scheduler() -> None:
+    '''Start the scheduler thread once. Daemon: it dies with the panel, which is the whole point.'''
+    global _scheduler_thread
+    if _scheduler_thread is None or not _scheduler_thread.is_alive():
+        _scheduler_thread = threading.Thread(target=_scheduler_loop, name="schedule-windows", daemon=True)
+        _scheduler_thread.start()
+
+
+# ===========================================================================
 # Update check (see modules/updater.py)
 # ===========================================================================
 def _freeze_config() -> None:
@@ -708,7 +815,8 @@ if __name__ == '__main__':
     # The launcher scripts set PANEL_OPEN_BROWSER=1 so the browser opens itself,
     # to the right port, cross-platform. Running `python app.py` by hand won't.
     if os.environ.get("PANEL_OPEN_BROWSER", "").strip() not in ("", "0", "false", "False"):
-        import threading
         import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    # Schedule windows only fire while this process is alive: the thread is a daemon of it.
+    start_scheduler()
     app.run(host="127.0.0.1", port=port, debug=False)

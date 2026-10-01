@@ -219,6 +219,10 @@
         table.jobs input.answer-edit { width: 100%; min-width: 160px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
         table.jobs .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
         table.jobs .row-actions .btn { padding: 4px 10px; font-size: 13px; }
+        .schedule-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); }
+        .schedule-row .days { display: flex; gap: 4px; flex-wrap: wrap; }
+        .schedule-row .days label { font-size: 13px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+        .schedule-row input[type=time] { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
         .state-pending { color: var(--warn); font-weight: 600; }
         .state-approved { color: var(--ok); font-weight: 600; }
 
@@ -473,7 +477,7 @@
             var isRun = (name === 'Run');
             var isAnswers = (name === 'Answers');
             document.getElementById('savebar').style.display = (isRun || isAnswers) ? 'none' : 'flex';
-            if (isRun) { refreshStatus(); refreshLogs(); loadAppliedJobs(); }
+            if (isRun) { refreshStatus(); refreshLogs(); loadAppliedJobs(); loadSchedule(); }
             if (isAnswers) { loadAnswers(); }
         }
 
@@ -676,6 +680,8 @@
             panel.appendChild(el('h2', { class: 'section-h', text: 'Activity log' }));
             panel.appendChild(el('pre', { class: 'log', id: 'logPane', text: 'No activity yet.' }));
 
+            panel.appendChild(buildSchedulePanel());
+
             var histWrap = el('div', {});
             histWrap.appendChild(el('h2', { class: 'section-h', text: 'Applied jobs history' }));
             var refresh = el('button', { class: 'btn secondary', type: 'button', text: 'Refresh history' });
@@ -687,6 +693,89 @@
             panel.appendChild(histWrap);
 
             return panel;
+        }
+
+        // ---- Schedule windows ----
+        var WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        function buildSchedulePanel() {
+            var wrap = el('div', {});
+            wrap.appendChild(el('h2', { class: 'section-h', text: 'Schedule' }));
+            wrap.appendChild(el('div', { class: 'note', html:
+                'Start and stop the tool automatically inside these windows (your computer\'s local time). ' +
+                '<strong>Windows only work while this control panel stays open</strong>: keep this window and the ' +
+                'launcher running. A window that ends before it starts runs overnight.' }));
+            var rows = el('div', { id: 'scheduleRows' });
+            wrap.appendChild(rows);
+            var actions = el('div', { class: 'run-actions', style: 'margin-top:10px;' });
+            var add = el('button', { class: 'btn secondary', type: 'button', text: 'Add window' });
+            add.addEventListener('click', function () { rows.appendChild(scheduleRow({ days: [0, 1, 2, 3, 4], start: '09:00', end: '17:00' })); });
+            var save = el('button', { class: 'btn', type: 'button', text: 'Save schedule', id: 'saveScheduleBtn' });
+            save.addEventListener('click', saveSchedule);
+            actions.appendChild(add);
+            actions.appendChild(save);
+            wrap.appendChild(actions);
+            wrap.appendChild(el('p', { class: 'muted-small', id: 'scheduleMsg', text: '' }));
+            return wrap;
+        }
+
+        function scheduleRow(window) {
+            var row = el('div', { class: 'schedule-row' });
+            var days = el('div', { class: 'days' });
+            WEEKDAYS.forEach(function (name, index) {
+                var box = el('input', { type: 'checkbox' });
+                box.checked = window.days.indexOf(index) !== -1;
+                box.dataset.day = String(index);
+                days.appendChild(el('label', {}, [box, document.createTextNode(name)]));
+            });
+            row.appendChild(days);
+            var start = el('input', { type: 'time', class: 'start', 'aria-label': 'Start time' });
+            start.value = window.start;
+            var end = el('input', { type: 'time', class: 'end', 'aria-label': 'End time' });
+            end.value = window.end;
+            row.appendChild(el('span', { class: 'muted-small', text: 'from' }));
+            row.appendChild(start);
+            row.appendChild(el('span', { class: 'muted-small', text: 'to' }));
+            row.appendChild(end);
+            var remove = el('button', { class: 'btn danger', type: 'button', text: 'Remove' });
+            remove.addEventListener('click', function () { row.remove(); });
+            row.appendChild(remove);
+            return row;
+        }
+
+        function readScheduleRows() {
+            var out = [];
+            document.querySelectorAll('#scheduleRows .schedule-row').forEach(function (row) {
+                var days = [];
+                row.querySelectorAll('input[type=checkbox]').forEach(function (box) { if (box.checked) days.push(parseInt(box.dataset.day, 10)); });
+                out.push({ days: days, start: row.querySelector('input.start').value, end: row.querySelector('input.end').value });
+            });
+            return out;
+        }
+
+        function loadSchedule() {
+            var rows = document.getElementById('scheduleRows');
+            if (!rows) return;
+            answersFetch('/api/schedule').then(function (res) {
+                if (!res.ok) return;
+                rows.innerHTML = '';
+                (res.body.windows || []).forEach(function (w) { rows.appendChild(scheduleRow(w)); });
+                var msg = document.getElementById('scheduleMsg');
+                if (msg) msg.textContent = res.body.windows && res.body.windows.length
+                    ? (res.body.active_now ? 'A window is active right now.' : 'No window is active right now.')
+                    : 'No windows yet. The tool runs only when you press Start.';
+            });
+        }
+
+        function saveSchedule() {
+            var msg = document.getElementById('scheduleMsg');
+            answersFetch('/api/schedule', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS),
+                                            body: JSON.stringify({ windows: readScheduleRows() }) })
+                .then(function (res) {
+                    if (!res.ok) { msg.textContent = 'Could not save: ' + (res.body.error || 'unknown error'); return; }
+                    msg.textContent = 'Schedule saved.';
+                    loadSchedule();
+                });
         }
 
         function setRunningUI(running, pid) {
