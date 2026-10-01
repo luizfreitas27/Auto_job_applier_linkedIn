@@ -16,6 +16,10 @@ reaches the AI should need them, and they stay off the wire.
 from __future__ import annotations
 
 from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from modules.markets import Market
 
 
 def _text(value: object | None) -> str:
@@ -25,16 +29,21 @@ def _text(value: object | None) -> str:
     return str(value).strip()
 
 
-def build_candidate_profile(personals: ModuleType | None = None, questions: ModuleType | None = None) -> str:
+def build_candidate_profile(personals: ModuleType | None = None, questions: ModuleType | None = None,
+                            market: "Market | None" = None) -> str:
     '''
     Plain-text block describing the applicant, one "Label: value" line per configured
     setting, followed by `user_information_all` verbatim. Blank settings are skipped.
-    `personals` / `questions` default to the live config modules; tests pass stand-ins.
+    `personals` / `questions` default to the live config modules and `market` to the active
+    market (modules/markets.py); tests pass stand-ins.
     '''
     if personals is None:
         import config.personals as personals
     if questions is None:
         import config.questions as questions
+    if market is None:
+        from modules.markets import active_market
+        market = active_market()
 
     def setting(module: ModuleType, name: str) -> str:
         '''One config setting as prompt text, "" when missing or blank.'''
@@ -55,7 +64,8 @@ def build_candidate_profile(personals: ModuleType | None = None, questions: Modu
         ("Years of professional experience", setting(questions, "years_of_experience")),
         ("Most recent employer", setting(questions, "recent_employer")),
         ("Headline", setting(questions, "linkedin_headline")),
-        ("Desired annual salary", setting(questions, "desired_salary")),
+        (f"Desired {market.salary_period} salary", f"{_text(market.desired_salary_as_entered)} {market.currency}".strip()
+            if market.desired_salary_as_entered else ""),
         ("Notice period", f"{noticeDays} days" if noticeDays else ""),
         ("Legally authorized to work in the country of the job", setting(questions, "legally_authorized")),
         ("Will require visa sponsorship", setting(questions, "require_visa")),

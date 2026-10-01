@@ -41,6 +41,10 @@ from config.search import *
 from config.secrets import use_AI, username, password, ai_provider
 import config.secrets as secrets_config
 from config.settings import *
+import config.markets as markets_config
+import config.questions as questions_config
+import config.search as search_config
+from modules.markets import resolve_market
 
 from modules.open_chrome import *
 from modules.helpers import *
@@ -107,13 +111,29 @@ dailyEasyApplyLimitReached = False
 
 re_experience = re.compile(r'[(]?\s*(\d+)\s*[)]?\s*[-to]*\s*\d*[+]*\s*year[s]?', re.IGNORECASE)
 
-desired_salary_lakhs = str(round(desired_salary / 100000, 2))
-desired_salary_monthly = str(round(desired_salary/12, 2))
-desired_salary = str(desired_salary)
+# The active market (config/markets.py) decides currency, salaries, search terms and location;
+# blank market values fall back to the general settings, so the default market behaves as before.
+# ponytail: the star-imported globals `desired_salary`, `current_ctc`, `search_terms` and
+# `search_location` are reassigned here so the ~20 call sites below keep reading bare names.
+# Replace the globals with `active_market.<field>` at the call sites when touching them.
+try:
+    active_market = resolve_market(markets_config, questions_config, search_config)
+except ValueError as e:
+    # validate_config() in main() reports this properly; until then run with the default market.
+    logger.error("Invalid market in config/markets.py (%s). Using 'internacional' until it is fixed.", e)
+    active_market = resolve_market(markets_config, questions_config, search_config, name="internacional")
+desired_salary_lakhs = str(round(active_market.desired_salary_annual / 100000, 2))
+desired_salary_monthly = str(active_market.desired_salary_monthly)
+desired_salary = str(active_market.desired_salary_annual)
 
-current_ctc_lakhs = str(round(current_ctc / 100000, 2))
-current_ctc_monthly = str(round(current_ctc/12, 2))
-current_ctc = str(current_ctc)
+current_ctc_lakhs = str(round(active_market.current_salary_annual / 100000, 2))
+current_ctc_monthly = str(active_market.current_salary_monthly)
+current_ctc = str(active_market.current_salary_annual)
+# A salary question naming no period gets the market's own: monthly in brasil, annual abroad.
+salary_in_market_period = active_market.salary_period == "monthly"
+
+search_terms = list(active_market.search_terms)
+search_location = active_market.search_location
 
 notice_period_months = str(notice_period//30)
 notice_period_weeks = str(notice_period//7)
@@ -429,22 +449,27 @@ def label_has(label: str, *words: str) -> bool:
 
 # Work-authorization wording overlaps the location questions ("United States" contains
 # "state") and the two families collide in every branch below, so it is classified first.
-visa_terms = ['sponsor', 'sponsors', 'sponsorship', 'visa', 'visas', 'work permit', 'h-1b', 'h1b']
+visa_terms = ['sponsor', 'sponsors', 'sponsorship', 'visa', 'visas', 'work permit', 'h-1b', 'h1b',
+              'visto', 'vistos', 'patrocínio', 'patrocinio', 'patrocínio de visto']
 # "Do you already have permission to work here?" - a Yes/No question. Lumping it in with
 # citizenship answered it with the descriptive citizenship status, which is not a valid
 # option in a Yes/No dropdown, so the fallback mapped it to "No" and told employers the
 # applicant was not authorized to work.
 authorization_terms = ['employment eligibility', 'legally authorized', 'legally authorised',
                        'authorized to work', 'authorised to work', 'work authorization',
-                       'work authorisation', 'right to work']
-citizenship_terms = ['citizen', 'citizens', 'citizenship']
+                       'work authorisation', 'right to work',
+                       'autorizado a trabalhar', 'autorizada a trabalhar', 'autorização de trabalho',
+                       'autorizacao de trabalho', 'permissão de trabalho', 'permissao de trabalho',
+                       'direito de trabalhar', 'legalmente autorizado', 'legalmente autorizada']
+citizenship_terms = ['citizen', 'citizens', 'citizenship', 'cidadania', 'cidadão', 'cidadao', 'cidadã']
 
 # Answer -> dropdown option mapping (see the NoSuchElementException fallback in
 # `answer_questions`). Matched with `find_bad_word`, i.e. whole words: 'no' as a substring
 # lives inside "**No**n-citizen ...", "not", "none" and "know".
-decline_terms = ['decline', 'prefer not', 'not wish', "don't wish", 'not want', 'rather not']
+decline_terms = ['decline', 'prefer not', 'not wish', "don't wish", 'not want', 'rather not',
+                 'prefiro não', 'prefiro nao', 'não desejo', 'nao desejo', 'não informar', 'nao informar']
 negation_terms = ['no', 'not', 'never', "don't", "doesn't", "won't", "can't", 'cannot',
-                  'disagree', 'decline']
+                  'disagree', 'decline', 'não', 'nao', 'nunca', 'discordo', 'recuso']
 
 # Checkbox labels that carry legal weight: attestations, certifications, consents,
 # agreements, acknowledgements, authorisations. None of these is ever auto-ticked - and
@@ -458,27 +483,47 @@ attestation_terms = ['certify', 'certifies', 'certification', 'attest', 'attesta
                      'authorize', 'authorise', 'authorization', 'authorisation',
                      'background check', 'drug test', 'drug screen', 'drug screening',
                      'accurate', 'accuracy', 'true and complete', 'eligible', 'eligibility',
-                     'citizen', 'citizenship', 'clearance', 'i understand', 'i confirm']
+                     'citizen', 'citizenship', 'clearance', 'i understand', 'i confirm',
+                     'declaro', 'concordo', 'autorizo', 'aceito', 'ciente', 'termos', 'política', 'politica',
+                     'verdadeiras', 'lgpd', 'consentimento', 'cidadania']
 
 # Sensitive questions: answered from configured answers ONLY, never by the AI and never from
 # the answer memory. A wrong guess here misstates the applicant's legal status, pay or
 # protected characteristics on a real application, so these families are gated before
 # either fallback is consulted.
 # No bare 'pay': "Do you pay attention to detail?" is not a salary question.
-salary_terms = ['salary', 'salaries', 'compensation', 'ctc', 'remuneration', 'wage', 'wages', 'pay rate', 'pay range']
-disability_terms = ['disability', 'disabilities', 'disabled', 'handicap', 'handicapped']
+salary_terms = ['salary', 'salaries', 'compensation', 'ctc', 'remuneration', 'wage', 'wages', 'pay rate', 'pay range',
+                'salário', 'salario', 'salarial', 'pretensão', 'pretensao', 'remuneração', 'remuneracao']
+disability_terms = ['disability', 'disabilities', 'disabled', 'handicap', 'handicapped',
+                    'deficiência', 'deficiencia', 'pcd']
 veteran_terms = ['veteran', 'veterans', 'military']
 sensitive_terms = (visa_terms + authorization_terms + citizenship_terms + clearance_terms
                    + salary_terms + disability_terms + veteran_terms)
 
+# Period words a salary or notice-period question may carry, English and Portuguese. A salary
+# question that names no period is answered in the active market's own period (monthly in
+# Brazil, annual abroad), so "Pretensão salarial" gets the monthly figure.
+month_terms = ['month', 'months', 'monthly', 'mês', 'mes', 'meses', 'mensal', 'mensais']
+week_terms = ['week', 'weeks', 'weekly', 'semana', 'semanas', 'semanal']
+annual_terms = ['year', 'yearly', 'annual', 'annually', 'per annum', 'ano', 'anual', 'anuais', 'por ano']
+
+# Location words, English and Portuguese, used by the select and text branches alike.
+country_terms = ['country', 'país', 'pais']
+state_terms = ['state', 'province', 'estado', 'uf']
+city_terms = ['city', 'cidade']
+
 # `years_of_experience` is a TOTAL, so it only answers a question that asks for the total.
-total_experience_terms = ['years of experience', 'years experience', 'work experience',
+total_experience_terms = ['anos de experiência', 'anos de experiencia', 'tempo de experiência', 'tempo de experiencia',
+                          'years of experience', 'years experience', 'work experience',
                           'working experience', 'professional experience', 'total experience',
                           'overall experience', 'industry experience', 'years of work',
                           'technical experience', 'years of technical', 'engineering experience']
 # ...and not when that question is narrowed to one skill: "years of Kubernetes experience",
 # "years of experience IN Kubernetes", "experience WITH Python", "how many years USING AWS".
-skill_qualifier_terms = ['in', 'with', 'using', 'on']
+skill_qualifier_terms = ['in', 'with', 'using', 'on', 'em', 'com']
+# "...experience in years" / "experiência em anos" names a unit, not a skill: strip it before
+# looking for a qualifier.
+period_unit_phrases = ['in years', 'in months', 'em anos', 'em meses']
 
 def work_authorization_answer(label: str) -> str | None:
     '''
@@ -750,16 +795,28 @@ def match_answer_to_option(answer: str | None, option_texts: list[str]) -> int |
     if not answer: return None
     want_negative = None            # None = the answer has no Yes/No polarity
     if find_bad_word(answer, decline_terms):
-        candidate_phrases = ["Decline", "not wish", "don't wish", "Prefer not", "not want"]
-    elif find_bad_word(answer, ['yes']):
-        candidate_phrases = ["Yes", "Agree", "I do", "I have"]
+        # The decline option is the one that itself says so ("Prefiro não informar"); without
+        # this, the bare "Não" option wins because "não" is a word inside "Prefiro não".
+        for i, option in enumerate(option_texts):
+            if find_bad_word(option, decline_terms):
+                return i
+        candidate_phrases = ["Decline", "not wish", "don't wish", "Prefer not", "not want",
+                             "Prefiro não", "Prefiro nao", "Não desejo", "Não informar"]
+    elif find_bad_word(answer, ['yes', 'sim']):
+        candidate_phrases = ["Yes", "Agree", "I do", "I have", "Sim", "Concordo", "Tenho", "Possuo"]
         want_negative = False
-    elif find_bad_word(answer, ['no']):
-        candidate_phrases = ["No", "Disagree", "I don't", "I do not"]
+    elif find_bad_word(answer, ['no', 'não', 'nao']):
+        candidate_phrases = ["No", "Disagree", "I don't", "I do not", "Não", "Nao", "Discordo", "Não tenho", "Não possuo"]
         want_negative = True
     else:
         candidate_phrases = [answer, answer.lower(), answer.upper(),
                              ''.join(ch for ch in answer if ch.isalnum())]
+    # An option that IS the phrase beats one that merely contains it: for "No", the option
+    # "Não" wins over "Sim, mas não agora", which also carries a negation word.
+    for phrase in candidate_phrases:
+        for i, option in enumerate(option_texts):
+            if option.strip().lower() == phrase.strip().lower():
+                return i
     for phrase in candidate_phrases:
         for i, option in enumerate(option_texts):
             if not (find_bad_word(option, [phrase]) or find_bad_word(phrase, [option])):
@@ -956,18 +1013,18 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     answer = auth_answer
                 elif label_has(label, 'email', 'phone'):
                     answer = prev_answer
-                elif label_has(label, 'gender', 'sex', 'sexual orientation'):
+                elif label_has(label, 'gender', 'sex', 'sexual orientation', 'gênero', 'genero', 'sexo'):
                     answer = gender
-                elif label_has(label, 'disability'):
+                elif label_has(label, *disability_terms):
                     answer = disability_status
-                elif label_has(label, 'proficiency'):
+                elif label_has(label, 'proficiency', 'proficiência', 'proficiencia', 'fluência', 'fluencia'):
                     answer = 'Professional'
-                elif label_has(label, 'location', 'city', 'state', 'country'):
-                    if label_has(label, 'country'):
+                elif label_has(label, 'location', 'localização', 'localizacao', *city_terms, *state_terms, *country_terms) and not label_has(label, 'civil'):
+                    if label_has(label, *country_terms):
                         answer = country
-                    elif label_has(label, 'state'):
+                    elif label_has(label, *state_terms):
                         answer = state
-                    elif label_has(label, 'city'):
+                    elif label_has(label, *city_terms):
                         answer = current_city if current_city else work_location
                     else:
                         answer = work_location
@@ -1028,8 +1085,8 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             if overwrite_previous_answers or prev_answer is None:
                 auth_answer = work_authorization_answer(label)
                 if auth_answer is not None: answer = auth_answer
-                elif label_has(label, 'veteran', 'protected'): answer = veteran_status
-                elif label_has(label, 'disability', 'handicapped'): 
+                elif label_has(label, 'veteran', 'protected', 'veterano'): answer = veteran_status
+                elif label_has(label, *disability_terms): 
                     answer = disability_status
                 else: answer = answer_common_questions(label,answer)
                 foundOption = try_xp(radio, f".//label[normalize-space()='{answer}']", False) if answer else False
@@ -1069,15 +1126,18 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             if not prev_answer or overwrite_previous_answers:
                 auth_answer = work_authorization_answer(label)
                 if auth_answer is not None: answer = auth_answer
-                elif label_has(label, 'experience', 'years'):
+                elif label_has(label, 'experience', 'years', 'experiência', 'experiencia', 'anos'):
                     # Only the total. "How many years of Kubernetes experience do you have?"
                     # and "...experience with Python?" ask about ONE skill, and the user's
                     # total is a false answer to those - leave them for config/questions.py.
-                    if find_bad_word(label, total_experience_terms) and not find_bad_word(label, skill_qualifier_terms):
+                    labelWithoutUnit = label
+                    for phrase in period_unit_phrases:
+                        labelWithoutUnit = labelWithoutUnit.replace(phrase, ' ')
+                    if find_bad_word(label, total_experience_terms) and not find_bad_word(labelWithoutUnit, skill_qualifier_terms):
                         answer = years_of_experience
-                elif label_has(label, 'phone', 'mobile'): answer = phone_number
-                elif label_has(label, 'street'): answer = street
-                elif label_has(label, 'email'):
+                elif label_has(label, 'phone', 'mobile', 'telefone', 'celular', 'whatsapp'): answer = phone_number
+                elif label_has(label, 'street', 'endereço', 'endereco', 'rua', 'logradouro'): answer = street
+                elif label_has(label, 'email', 'e-mail'):
                     # "Email address" contains the whole word "address", so without this guard it
                     # falls through below and types the user's CITY into the email box. There is no
                     # email value in config/personals.py, so leave it for LinkedIn's own prefill
@@ -1086,46 +1146,52 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     # replayed on every later application.
                     fallbackAllowed = False
                     print_lg(f'No configured answer for the email question "{label_org}". Leaving LinkedIn\'s own value in place.')
-                elif label_has(label, 'city', 'location', 'address'):
+                elif label_has(label, 'city', 'location', 'address', 'cidade', 'localização', 'localizacao'):
                     answer = current_city if current_city else work_location
                     do_actions = True
-                elif label_has(label, 'signature'): answer = full_name # 'signature' in label or 'legal name' in label or 'your name' in label or 'full name' in label: answer = full_name     # What if question is 'name of the city or university you attend, name of referral etc?'
-                elif label_has(label, 'name', 'surname'):
-                    if label_has(label, 'full'): answer = full_name
-                    elif label_has(label, 'first') and not label_has(label, 'last'): answer = first_name
-                    elif label_has(label, 'middle') and not label_has(label, 'last'): answer = middle_name
-                    elif label_has(label, 'last', 'surname') and not label_has(label, 'first'): answer = last_name
-                    elif label_has(label, 'employer'): answer = recent_employer
+                elif label_has(label, 'signature', 'assinatura'): answer = full_name # 'signature' in label or 'legal name' in label or 'your name' in label or 'full name' in label: answer = full_name     # What if question is 'name of the city or university you attend, name of referral etc?'
+                elif label_has(label, 'name', 'surname', 'nome', 'sobrenome'):
+                    if label_has(label, 'full', 'completo'): answer = full_name
+                    elif label_has(label, 'first', 'primeiro') and not label_has(label, 'last', 'sobrenome'): answer = first_name
+                    elif label_has(label, 'middle', 'meio') and not label_has(label, 'last', 'sobrenome'): answer = middle_name
+                    elif label_has(label, 'last', 'surname', 'sobrenome') and not label_has(label, 'first', 'primeiro'): answer = last_name
+                    elif label_has(label, 'employer', 'empregador', 'empresa'): answer = recent_employer
                     else: answer = full_name
-                elif label_has(label, 'notice'):
-                    if label_has(label, 'month', 'months', 'monthly'):
+                elif label_has(label, 'notice', 'aviso prévio', 'aviso previo'):
+                    if label_has(label, *month_terms):
                         answer = notice_period_months
-                    elif label_has(label, 'week', 'weeks', 'weekly'):
+                    elif label_has(label, *week_terms):
                         answer = notice_period_weeks
                     else: answer = notice_period
-                elif label_has(label, 'salary', 'compensation', 'ctc', 'pay'): 
-                    if label_has(label, 'current', 'present'):
-                        if label_has(label, 'month', 'months', 'monthly'):
+                elif label_has(label, 'pay', *salary_terms):      # bare 'pay' answers here but is not a sensitivity trigger
+                    # Which period the question asks for; the active market already holds both,
+                    # and a question naming no period gets the market's own ("as entered").
+                    if label_has(label, 'current', 'present', 'atual'):
+                        if label_has(label, *month_terms):
                             answer = current_ctc_monthly
                         elif label_has(label, 'lakh', 'lakhs'):
                             answer = current_ctc_lakhs
-                        else:
+                        elif label_has(label, *annual_terms):
                             answer = current_ctc
+                        else:
+                            answer = current_ctc_monthly if salary_in_market_period else current_ctc
                     else:
-                        if label_has(label, 'month', 'months', 'monthly'):
+                        if label_has(label, *month_terms):
                             answer = desired_salary_monthly
                         elif label_has(label, 'lakh', 'lakhs'):
                             answer = desired_salary_lakhs
-                        else:
+                        elif label_has(label, *annual_terms):
                             answer = desired_salary
+                        else:
+                            answer = desired_salary_monthly if salary_in_market_period else desired_salary
                 elif label_has(label, 'linkedin'): answer = linkedIn
-                elif label_has(label, 'website', 'blog', 'portfolio', 'link', 'links'): answer = website
+                elif label_has(label, 'website', 'blog', 'portfolio', 'link', 'links', 'portfólio'): answer = website
                 elif label_has(label, 'scale of 1-10'): answer = confidence_level
                 elif label_has(label, 'headline'): answer = linkedin_headline
                 elif label_has(label, 'hear', 'heard', 'come across') and label_has(label, 'this') and label_has(label, 'job', 'position'): answer = "https://github.com/GodsScion/Auto_job_applier_linkedIn"
-                elif label_has(label, 'state', 'province'): answer = state
-                elif label_has(label, 'zip', 'zipcode', 'postal', 'postcode', 'code'): answer = zipcode
-                elif label_has(label, 'country'): answer = country
+                elif label_has(label, *state_terms) and not label_has(label, 'civil'): answer = state   # "Estado civil" is marital status
+                elif label_has(label, 'zip', 'zipcode', 'postal', 'postcode', 'code', 'cep'): answer = zipcode
+                elif label_has(label, *country_terms): answer = country
                 else: answer = answer_common_questions(label,answer)
                 if answer == "" and fallbackAllowed:
                     answer = answer_from_memory_or_ai(label_org, "text", job_description, job_link)
@@ -1155,8 +1221,8 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             answer = ""
             prev_answer = text_area.get_attribute("value")
             if not prev_answer or overwrite_previous_answers:
-                if label_has(label, 'summary'): answer = linkedin_summary
-                elif label_has(label, 'cover'): answer = cover_letter
+                if label_has(label, 'summary', 'resumo', 'sobre você', 'sobre voce'): answer = linkedin_summary
+                elif label_has(label, 'cover', 'carta', 'apresentação', 'apresentacao'): answer = cover_letter
                 if answer == "":
                     answer = answer_from_memory_or_ai(label_org, "textarea", job_description, job_link)
                     if answer == "":

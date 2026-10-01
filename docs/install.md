@@ -41,7 +41,9 @@ https://youtu.be/f9rdz74e1lM (recommended to watch at 2x speed).
    anti-detection, and Selenium Manager resolves the
    [Chrome Driver](https://googlechromelabs.github.io/chrome-for-testing/).
 
-6. **Configure the tool** — see [Configuration](configuration.md).
+6. **Configure the tool** — see [Configuration](configuration.md). Keep your LinkedIn
+   **interface language in English**: the tool finds LinkedIn's buttons by their English text.
+   Company form questions in Portuguese are fine, see [markets](config-markets.md).
 
 7. **Run it.**
 

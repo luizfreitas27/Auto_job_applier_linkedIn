@@ -254,6 +254,37 @@ SCHEMA = [
         ],
     },
     {
+        "section": "Markets",
+        "fields": [
+            _f("Markets", "markets", "market", "Market for this run", "select",
+               "Where you are applying. Brazil uses the monthly salaries in reais below; International uses the annual salaries and currency below. "
+               "Each market also has its own search location and terms. Keep your LinkedIn interface in English either way: the tool finds LinkedIn's own buttons by their English text.",
+               options=["brasil", "internacional"]),
+            # --- Brasil ---
+            _f("Markets", "markets", "br_desired_salary_monthly", "Brasil: pretensão salarial mensal (R$)", "number",
+               "Monthly salary you want, in reais, Eg: 8000. 0 means: use the general 'desired salary' setting as-is."),
+            _f("Markets", "markets", "br_current_salary_monthly", "Brasil: salário atual mensal (R$)", "number",
+               "Your current monthly salary in reais. 0 means: use the general 'current salary' setting as-is."),
+            _f("Markets", "markets", "br_search_location", "Brasil: local de busca", "text",
+               "Typed into LinkedIn's location box, Eg: Brasil, São Paulo, SP, Remoto. Blank means: use the general search location."),
+            _f("Markets", "markets", "br_search_terms", "Brasil: cargos a buscar", "list",
+               "Comma-separated, Eg: Desenvolvedor Python, Engenheiro de Software. Blank means: use the general search terms."),
+            _f("Markets", "markets", "br_currency", "Brasil: moeda", "text",
+               "Currency code for the Brazilian market. Normally BRL.", advanced=True),
+            # --- Internacional ---
+            _f("Markets", "markets", "intl_currency", "International: currency", "text",
+               "Currency code your international salaries are in, Eg: USD, EUR, GBP."),
+            _f("Markets", "markets", "intl_desired_salary_annual", "International: desired annual salary", "number",
+               "Annual salary you want, in the currency above, Eg: 90000. 0 means: use the general 'desired salary' setting as-is."),
+            _f("Markets", "markets", "intl_current_salary_annual", "International: current annual salary", "number",
+               "Your current annual salary in that currency. 0 means: use the general 'current salary' setting as-is."),
+            _f("Markets", "markets", "intl_search_location", "International: search location", "text",
+               "Eg: United States, Portugal, European Union. Blank means: use the general search location."),
+            _f("Markets", "markets", "intl_search_terms", "International: job titles to search", "list",
+               "Comma-separated, Eg: Software Engineer, Backend Developer. Blank means: use the general search terms."),
+        ],
+    },
+    {
         "section": "Run settings",
         "fields": [
             _f("Run settings", "settings", "run_in_background", "Run in background", "bool",

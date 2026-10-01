@@ -58,9 +58,14 @@ when `OPENAI_API_KEY` is set.
 
 Three value layers, lowest precedence first, plus the schema that describes them:
 
-1. `config/{personals,questions,search,secrets,settings}.py`: shipped defaults, tracked in
-   git, documented inline. `runAiBot.py` star-imports all five, so every setting is a bare
-   module-level global there.
+1. `config/{personals,questions,search,secrets,settings,markets}.py`: shipped defaults,
+   tracked in git, documented inline. `runAiBot.py` star-imports the first five, so every
+   setting is a bare module-level global there; `markets` is read through
+   `modules.markets.resolve_market()` into `active_market`, which overrides the derived
+   `desired_salary*`/`current_ctc*` strings and `search_terms`/`search_location` at import
+   (blank market values fall back to the general settings). Question heuristics carry
+   Portuguese terms alongside English; `month_terms`/`annual_terms` decide the salary period,
+   defaulting to the market's own.
 2. `user_config.json` (gitignored): written **only** by `app.py`. `config/_overrides.py`
    applies it per section (section name = config module name) and only for keys that already
    exist in the module, so JSON can never introduce a new name.

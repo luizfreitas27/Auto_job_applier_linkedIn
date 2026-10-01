@@ -38,7 +38,8 @@ section of `user_config.json`.
 | 2 | [`config/questions.py`](config-questions.md) | Answers to Easy Apply questions: experience, work authorization, salary, notice period, resume path |
 | 3 | [`config/search.py`](config-search.md) | What to search for, which filters to apply, and which jobs to skip |
 | 4 | [`config/secrets.py`](config-secrets.md) | LinkedIn login (optional), the optional AI setup and optional Telegram notifications |
-| 5 | [`config/settings.py`](config-settings.md) | How the bot itself runs: click gap, background mode, screen awake, driver management |
+| 5 | [`config/markets.py`](config-markets.md) | Brazil or abroad: currency, monthly/annual salaries, search location and terms per market |
+| 6 | [`config/settings.py`](config-settings.md) | How the bot itself runs: click gap, background mode, screen awake, driver management |
 
 Then run `runAiBot.py` and watch it work. Or run `app.py` for the control panel, which also
 shows your Applied Jobs history.
