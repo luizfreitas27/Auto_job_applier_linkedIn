@@ -166,6 +166,10 @@ def validate_secrets() -> None | ValueError | TypeError:
     check_string(llm_api_key, "llm_api_key")
     check_string(ai_provider, "ai_provider", ["openai", "deepseek", "gemini"])
     check_string(llm_model, "llm_model")
+    check_string(telegram_bot_token, "telegram_bot_token")
+    check_string(telegram_chat_id, "telegram_chat_id")
+    if bool(telegram_bot_token.strip()) != bool(telegram_chat_id.strip()):
+        raise ValueError('Telegram notifications need BOTH "telegram_bot_token" and "telegram_chat_id" in config/secrets.py, or both empty to stay off.')
 
 
 from config.settings import *

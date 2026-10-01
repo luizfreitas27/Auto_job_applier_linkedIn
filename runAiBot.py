@@ -39,6 +39,7 @@ from config.personals import *
 from config.questions import *
 from config.search import *
 from config.secrets import use_AI, username, password, ai_provider
+import config.secrets as secrets_config
 from config.settings import *
 
 from modules.open_chrome import *
@@ -51,6 +52,7 @@ from modules.answers_memory import AnswerMemory
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
 from modules.ai.profile import build_candidate_profile
+from modules import notify
 
 from typing import Literal
 
@@ -1756,6 +1758,21 @@ def run_summary(total_runs: int) -> str:
                 failed_count, skip_count, pendingAnswers)
 
 
+def notify_run_end(summary: str) -> bool:
+    '''Send the run summary to Telegram, if notifications are configured. Never raises.'''
+    return notify.send_message(f"Auto Job Applier: run finished.\n\n{summary}",
+                               getattr(secrets_config, "telegram_bot_token", ""),
+                               getattr(secrets_config, "telegram_chat_id", ""))
+
+
+def notify_error(reason: str, error: BaseException | None = None) -> bool:
+    '''Tell the user on Telegram that the bot stopped because of an error. Never raises.'''
+    detail = f"\n\n{type(error).__name__}: {error}" if error is not None else ""
+    return notify.send_message(f"Auto Job Applier stopped: {reason}{detail}",
+                               getattr(secrets_config, "telegram_bot_token", ""),
+                               getattr(secrets_config, "telegram_chat_id", ""))
+
+
 def main() -> None:
     dialogs.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
     total_runs = 1
@@ -1798,12 +1815,15 @@ def main() -> None:
 
     except (NoSuchWindowException, WebDriverException) as e:
         logger.error("The browser window was closed or the session became invalid. Exiting.", exc_info=e)
+        notify_error("the browser window was closed or the session became invalid", e)
     except Exception as e:
         critical_error_log("In Applier Main", e)
+        notify_error("an unexpected error", e)
         dialogs.alert(e,alert_title)
     finally:
         summary = run_summary(total_runs)
         print_lg(summary)
+        notify_run_end(summary)
         print_lg("\n\nTotal runs:                     {}".format(total_runs))
         print_lg("Jobs Easy Applied:              {}".format(easy_applied_count))
         print_lg("External job links collected:   {}".format(external_jobs_count))

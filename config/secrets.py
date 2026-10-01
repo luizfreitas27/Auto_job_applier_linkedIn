@@ -59,6 +59,16 @@ llm_api_url = "https://api.openai.com/v1/"
 llm_temperature = None
 
 
+## Telegram notifications (optional)
+# Get a message on Telegram with the run summary when a run ends, and right away if the tool
+# stops because of an error. Leave both empty to turn this off.
+#   1. In Telegram, talk to @BotFather, send /newbot and copy the token it gives you.
+#   2. Send your new bot any message, then open
+#      https://api.telegram.org/bot<TOKEN>/getUpdates in a browser and copy the "chat":{"id": ...}.
+telegram_bot_token = ""                   # "123456789:AAH...": the token from @BotFather, in quotes, or "" for off
+telegram_chat_id = ""                     # "987654321": your chat id, in quotes, or "" for off
+
+
 
 
 ############################################################################################################
