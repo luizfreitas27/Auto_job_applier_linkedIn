@@ -116,12 +116,14 @@ def _load_defaults() -> dict:
         import config.questions as _questions
         import config.search as _search
         import config.settings as _settings
+        import config.markets as _markets
         modules = {
             "secrets": _secrets,
             "personals": _personals,
             "questions": _questions,
             "search": _search,
             "settings": _settings,
+            "markets": _markets,
         }
         # Reload in case they were already imported (with real overrides) earlier.
         for module in modules.values():

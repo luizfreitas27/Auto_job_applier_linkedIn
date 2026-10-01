@@ -170,6 +170,28 @@ def validate_secrets() -> None | ValueError | TypeError:
     check_string(telegram_chat_id, "telegram_chat_id")
 
 
+from config.markets import *
+def validate_markets() -> None | ValueError | TypeError:
+    '''
+    Validates all variables in the `/config/markets.py` file.
+    '''
+    global __validation_file_path
+    __validation_file_path = "config/markets.py"
+    check_string(market, "market", ["brasil", "internacional"])
+    check_string(br_currency, "br_currency", min_length=3)
+    check_string(intl_currency, "intl_currency", min_length=3)
+    for name, value in (("br_desired_salary_monthly", br_desired_salary_monthly), ("br_current_salary_monthly", br_current_salary_monthly),
+                        ("intl_desired_salary_annual", intl_desired_salary_annual), ("intl_current_salary_annual", intl_current_salary_annual)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f'The variable "{name}" in "{__validation_file_path}" must be a number without quotes, Eg: `{name} = 8000`. Received {value!r}.')
+        if value < 0:
+            raise ValueError(f'The variable "{name}" in "{__validation_file_path}" cannot be negative. Use 0 to fall back to the general setting.')
+    check_string(br_search_location, "br_search_location")
+    check_string(intl_search_location, "intl_search_location")
+    check_list(br_search_terms, "br_search_terms")
+    check_list(intl_search_terms, "intl_search_terms")
+
+
 from config.settings import *
 def validate_settings() -> None | ValueError | TypeError:
     '''
@@ -214,6 +236,7 @@ def validate_config() -> bool | ValueError | TypeError:
     validate_questions()
     validate_search()
     validate_secrets()
+    validate_markets()
     validate_settings()
 
     # validate_String(chatGPT_username, "chatGPT_username")

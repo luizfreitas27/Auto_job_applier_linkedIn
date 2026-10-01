@@ -42,6 +42,10 @@ _Avoid_: query, keyword, role
 One full pass over all search terms. In non-stop mode runs repeat with pauses until the daily Easy Apply limit is reached.
 _Avoid_: session, cycle, loop
 
+**Market**:
+The set of values that differ between applying in Brazil and abroad: currency, desired and current salary (monthly in Brazil, annual abroad), search location and search terms. One market is active per run.
+_Avoid_: region, locale, country mode, profile
+
 ### Form questions
 
 **Question**:
