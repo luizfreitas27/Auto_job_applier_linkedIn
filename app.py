@@ -106,10 +106,10 @@ def _load_defaults() -> dict:
     the untouched Python defaults regardless of whether user_config.json exists
     right now. Returns {config_module: {key: default_value}}.
     '''
-    original_loader = _overrides.load_user_config
-    original_env = _overrides.env_overrides
+    originalLoader = _overrides.load_user_config
+    originalEnv = _overrides.all_env_overrides
     _overrides.load_user_config = lambda: {}
-    _overrides.env_overrides = lambda section: {}
+    _overrides.all_env_overrides = lambda: {}
     try:
         import config.secrets as _secrets
         import config.personals as _personals
@@ -134,8 +134,8 @@ def _load_defaults() -> dict:
             defaults.setdefault(module_name, {})[key] = getattr(module, key, None)
         return defaults
     finally:
-        _overrides.load_user_config = original_loader
-        _overrides.env_overrides = original_env
+        _overrides.load_user_config = originalLoader
+        _overrides.all_env_overrides = originalEnv
 
 
 DEFAULTS = _load_defaults()
@@ -186,11 +186,12 @@ def _write_user_config(data: dict) -> None:
     with open(temporaryPath, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, ensure_ascii=False)
     os.replace(temporaryPath, USER_CONFIG_PATH)
-def _effective_config() -> dict:
+def _effective_config(include_env: bool = True) -> dict:
     '''
     Return {config_module: {key: value}} of the pristine defaults overlaid with
-    the CURRENT contents of user_config.json and then the environment (both
-    re-read on every call). Only keys defined in config_schema are included.
+    the CURRENT contents of user_config.json and, unless `include_env` is False,
+    the environment (all re-read on every call). Only keys defined in
+    config_schema are included.
     '''
     effective = copy.deepcopy(DEFAULTS)
     user = _overrides.load_user_config()
@@ -200,10 +201,9 @@ def _effective_config() -> dict:
         section = user.get(module_name)
         if isinstance(section, dict) and key in section:
             effective[module_name][key] = section[key]
-    for module_name, values in _locked_fields().items():
-        fromEnv = _overrides.env_overrides(module_name)
-        for key in values:
-            effective[module_name][key] = fromEnv[key]
+    if include_env:
+        for module_name, values in _overrides.all_env_overrides().items():
+            effective.setdefault(module_name, {}).update(values)
     return effective
 
 
@@ -213,12 +213,7 @@ def _locked_fields() -> dict:
     provides. The panel shows them disabled and the API refuses to save them: a value
     saved to user_config.json would be silently ignored.
     '''
-    locked = {}
-    for module_name in _overrides.SECRET_ENV_NAMES:
-        keys = sorted(_overrides.env_overrides(module_name))
-        if keys:
-            locked[module_name] = keys
-    return locked
+    return {module_name: sorted(values) for module_name, values in _overrides.all_env_overrides().items()}
 
 
 def _coerce(field_type: str, value):
@@ -473,6 +468,7 @@ def api_save_config():
     valid = config_schema.valid_keys()
     locked = _locked_fields()
     unknown = []
+    lockedHits = []
     coerced = {}
 
     for section, values in payload.items():
@@ -486,11 +482,11 @@ def api_save_config():
             if field is None:
                 unknown.append(f"{section}.{key}")
                 continue
+            if key in locked.get(section, []):
+                lockedHits.append(f"{section}.{key} ({_overrides.SECRET_ENV_NAMES[section][key]})")
+                continue
             if field["type"] == "password" and value == SECRET_MASK:
                 continue
-            if key in locked.get(section, []):
-                envName = _overrides.SECRET_ENV_NAMES[section][key]
-                return jsonify({"error": f"'{section}.{key}' is set by the environment variable {envName} (or .env). Change it there."}), 400
             try:
                 coerced.setdefault(section, {})[key] = _coerce(field["type"], value)
             except ValueError as err:
@@ -498,6 +494,9 @@ def api_save_config():
 
     if unknown:
         return jsonify({"error": "Unknown settings rejected", "unknown": unknown}), 400
+    if lockedHits:
+        return jsonify({"error": "These settings are set by an environment variable or .env; change them there: "
+                                 + ", ".join(lockedHits), "locked": lockedHits}), 400
 
     # Read-modify-write user_config.json.
     with _user_config_lock:
@@ -812,7 +811,9 @@ def _freeze_config() -> None:
     '''
     with _user_config_lock:
         current = _overrides.load_user_config()
-        for section, values in _effective_config().items():
+        # include_env=False: a secret that lives only in .env must never be copied into
+        # this file, which is the whole reason it is in .env.
+        for section, values in _effective_config(include_env=False).items():
             if not isinstance(current.get(section), dict):
                 current[section] = {}
             for key, value in values.items():

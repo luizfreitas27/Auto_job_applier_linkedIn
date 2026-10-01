@@ -412,11 +412,15 @@
         }
 
         // Fields the server says come from the environment or .env: shown, but not editable.
+        function isLocked(configModule, key) {
+            return ((CONFIG._locked || {})[configModule] || []).indexOf(key) !== -1;
+        }
+
         function lockEnvFields() {
             var locked = CONFIG._locked || {};
-            Object.keys(locked).forEach(function (cm) {
-                locked[cm].forEach(function (key) {
-                    var node = document.getElementById('f__' + cm + '__' + key);
+            Object.keys(locked).forEach(function (moduleName) {
+                locked[moduleName].forEach(function (key) {
+                    var node = document.getElementById('f__' + moduleName + '__' + key);
                     if (!node) return;
                     node.disabled = true;
                     var box = node.closest('.field');
@@ -954,8 +958,7 @@
             var changed = 0;
             SCHEMA.forEach(function (section) {
                 section.fields.forEach(function (field) {
-                    var lockedKeys = (CONFIG._locked || {})[field.config_module] || [];
-                    if (lockedKeys.indexOf(field.key) !== -1) return;
+                    if (isLocked(field.config_module, field.key)) return;
                     var current = readControlValue(field);
                     if (current === undefined) return;
                     var base = baselineValue(field.config_module, field.key);
@@ -1006,7 +1009,10 @@
             var merged = JSON.parse(JSON.stringify(CONFIG));
             for (var cm in saved) {
                 if (!merged[cm]) merged[cm] = {};
-                for (var key in saved[cm]) { merged[cm][key] = saved[cm][key]; }
+                for (var key in saved[cm]) {
+                    if (isLocked(cm, key)) continue;          // the environment's value stays on screen
+                    merged[cm][key] = saved[cm][key];
+                }
             }
             return merged;
         }

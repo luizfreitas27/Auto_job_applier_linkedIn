@@ -126,6 +126,31 @@ def test_saving_a_locked_field_is_refused_and_nothing_is_written(client, isolate
     assert not cfg_path.exists()
 
 
+def test_even_the_mask_is_refused_for_a_locked_password(client, isolated):
+    env_path, cfg_path = isolated
+    env_path.write_text("LINKEDIN_PASSWORD=from-dotenv\n", encoding="utf-8")
+    import app
+    assert client.post("/api/config", json={"secrets": {"password": app.SECRET_MASK}}, headers=PANEL).status_code == 400
+
+
+def test_the_updater_freeze_never_copies_an_environment_secret_into_the_file(client, isolated):
+    '''The whole point of .env: the secret must not land in a config file, not even via the updater.'''
+    env_path, cfg_path = isolated
+    env_path.write_text("LINKEDIN_PASSWORD=from-dotenv\nLLM_API_KEY=sk-dotenv\n", encoding="utf-8")
+    import app
+    app._freeze_config()
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert saved["secrets"]["password"] == "example_password"         # the shipped default, not the secret
+    assert saved["secrets"]["llm_api_key"] == "not-needed"
+    assert "from-dotenv" not in cfg_path.read_text(encoding="utf-8")
+
+
+def test_an_inline_hash_is_part_of_the_value(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("LINKEDIN_PASSWORD=pa#ss # not a comment\n", encoding="utf-8")
+    assert _overrides.load_env_file(str(path)) == {"LINKEDIN_PASSWORD": "pa#ss # not a comment"}
+
+
 def test_other_fields_still_save_while_one_is_locked(client, isolated):
     env_path, cfg_path = isolated
     env_path.write_text("LINKEDIN_PASSWORD=from-dotenv\n", encoding="utf-8")

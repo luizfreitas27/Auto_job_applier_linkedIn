@@ -44,17 +44,18 @@ SECRET_ENV_NAMES = {
 }
 
 
-def load_env_file(path: str = None) -> dict:
+def load_env_file(path: str | None = None) -> dict:
     '''
-    The KEY=VALUE pairs in `.env` (or `path`). Blank lines and `#` comments are skipped,
-    an optional `export ` prefix and surrounding single or double quotes are removed, and a
-    line without `=` is ignored. Missing or unreadable file: {}. Never raises.
+    The KEY=VALUE pairs in `.env` (or `path`). Blank lines and lines starting with `#` are
+    skipped (a `#` after the value is part of the value: passwords contain them), an optional
+    `export ` prefix and surrounding single or double quotes are removed, and a line without
+    `=` is ignored. Missing or unreadable file: {}. Never raises.
     '''
     values = {}
     try:
         with open(path or ENV_FILE_PATH, "r", encoding="utf-8") as file:
             lines = file.read().splitlines()
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError):
         return {}
     for line in lines:
         text = line.strip()
@@ -72,23 +73,27 @@ def load_env_file(path: str = None) -> dict:
     return values
 
 
-def env_overrides(section_name: str) -> dict:
+def all_env_overrides() -> dict:
     '''
-    {setting: value} for the settings of `section_name` that the environment provides. A
-    real environment variable wins over `.env`; empty values count as "not set".
+    {section: {setting: value}} for every setting the environment provides, reading `.env`
+    once. A real environment variable wins over `.env`; empty values count as "not set".
+    Sections with nothing set are left out.
     '''
-    names = SECRET_ENV_NAMES.get(section_name, {})
-    if not names:
-        return {}
     fromFile = load_env_file()
     found = {}
-    for setting, envName in names.items():
-        value = os.environ.get(envName)
-        if value is None or value == "":
-            value = fromFile.get(envName)
-        if value is not None and value != "":
-            found[setting] = value
+    for sectionName, names in SECRET_ENV_NAMES.items():
+        for setting, envName in names.items():
+            value = os.environ.get(envName)
+            if value is None or value == "":
+                value = fromFile.get(envName)
+            if value is not None and value != "":
+                found.setdefault(sectionName, {})[setting] = value
     return found
+
+
+def env_overrides(section_name: str) -> dict:
+    '''{setting: value} for the settings of `section_name` that the environment provides.'''
+    return all_env_overrides().get(section_name, {})
 
 
 def load_user_config() -> dict:

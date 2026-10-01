@@ -20,8 +20,10 @@ there is one commit away from being published.
 
 Precedence, highest first: a real environment variable, then `.env`, then what the control
 panel saved (`user_config.json`), then the defaults in `config/secrets.py`. A field that comes
-from the environment is shown disabled in the control panel with a note saying so. Only these
-five settings have an environment name; everything else stays in the config files and the panel.
+from the environment is shown disabled in the control panel with a note saying so; the password
+and the tokens are masked there, the username and chat id are shown. The in-app updater never
+copies these values into `user_config.json`. Only these five settings have an environment name;
+everything else stays in the config files and the panel.
 
 ## LinkedIn login (optional)
 
