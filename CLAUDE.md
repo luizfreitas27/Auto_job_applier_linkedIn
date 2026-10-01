@@ -56,7 +56,7 @@ when `OPENAI_API_KEY` is set.
 
 ### Configuration layering
 
-Three layers, in order of precedence:
+Four layers, lowest precedence first:
 
 1. `config/{personals,questions,search,secrets,settings}.py`: shipped defaults, tracked in
    git, documented inline. `runAiBot.py` star-imports all five, so every setting is a bare
@@ -64,7 +64,10 @@ Three layers, in order of precedence:
 2. `user_config.json` (gitignored): written **only** by `app.py`. `config/_overrides.py`
    applies it per section (section name = config module name) and only for keys that already
    exist in the module, so JSON can never introduce a new name.
-3. `config_schema.py`: the single source of truth for what the control panel renders.
+3. Environment / `.env` (gitignored), for the five secrets in `_overrides.SECRET_ENV_NAMES`
+   only; a real variable beats `.env`. Applied last by `_overrides.apply`. The panel reports
+   them as `_locked` in `GET /api/config`, disables the fields and refuses to save them.
+4. `config_schema.py`: the single source of truth for what the control panel renders.
    Settings not in the schema are still usable by editing the `.py` file.
 
 Adding a setting therefore means: the `config/*.py` file (comment + example values), a check

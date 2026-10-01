@@ -107,7 +107,9 @@ def _load_defaults() -> dict:
     right now. Returns {config_module: {key: default_value}}.
     '''
     original_loader = _overrides.load_user_config
+    original_env = _overrides.env_overrides
     _overrides.load_user_config = lambda: {}
+    _overrides.env_overrides = lambda section: {}
     try:
         import config.secrets as _secrets
         import config.personals as _personals
@@ -133,6 +135,7 @@ def _load_defaults() -> dict:
         return defaults
     finally:
         _overrides.load_user_config = original_loader
+        _overrides.env_overrides = original_env
 
 
 DEFAULTS = _load_defaults()
@@ -186,8 +189,8 @@ def _write_user_config(data: dict) -> None:
 def _effective_config() -> dict:
     '''
     Return {config_module: {key: value}} of the pristine defaults overlaid with
-    the CURRENT contents of user_config.json (re-read from disk on every call).
-    Only keys defined in config_schema are included.
+    the CURRENT contents of user_config.json and then the environment (both
+    re-read on every call). Only keys defined in config_schema are included.
     '''
     effective = copy.deepcopy(DEFAULTS)
     user = _overrides.load_user_config()
@@ -197,7 +200,25 @@ def _effective_config() -> dict:
         section = user.get(module_name)
         if isinstance(section, dict) and key in section:
             effective[module_name][key] = section[key]
+    for module_name, values in _locked_fields().items():
+        fromEnv = _overrides.env_overrides(module_name)
+        for key in values:
+            effective[module_name][key] = fromEnv[key]
     return effective
+
+
+def _locked_fields() -> dict:
+    '''
+    {config_module: [key, ...]} of the settings the environment or .env currently
+    provides. The panel shows them disabled and the API refuses to save them: a value
+    saved to user_config.json would be silently ignored.
+    '''
+    locked = {}
+    for module_name in _overrides.SECRET_ENV_NAMES:
+        keys = sorted(_overrides.env_overrides(module_name))
+        if keys:
+            locked[module_name] = keys
+    return locked
 
 
 def _coerce(field_type: str, value):
@@ -427,10 +448,13 @@ def api_schema():
 def api_get_config():
     '''
     Returns the effective config: pristine defaults overlaid with the current
-    user_config.json, grouped by config module (secrets, personals, questions,
-    search, settings).
+    user_config.json and the environment, grouped by config module (secrets,
+    personals, questions, search, settings), plus "_locked": the fields the
+    environment provides, which the panel cannot change.
     '''
-    return jsonify(_mask_secrets(_effective_config()))
+    body = _mask_secrets(_effective_config())
+    body["_locked"] = _locked_fields()
+    return jsonify(body)
 
 
 @app.route('/api/config', methods=['POST'])
@@ -447,6 +471,7 @@ def api_save_config():
         return jsonify({"error": "Expected a JSON object of {section: {key: value}}"}), 400
 
     valid = config_schema.valid_keys()
+    locked = _locked_fields()
     unknown = []
     coerced = {}
 
@@ -463,6 +488,9 @@ def api_save_config():
                 continue
             if field["type"] == "password" and value == SECRET_MASK:
                 continue
+            if key in locked.get(section, []):
+                envName = _overrides.SECRET_ENV_NAMES[section][key]
+                return jsonify({"error": f"'{section}.{key}' is set by the environment variable {envName} (or .env). Change it there."}), 400
             try:
                 coerced.setdefault(section, {})[key] = _coerce(field["type"], value)
             except ValueError as err:

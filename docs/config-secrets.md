@@ -3,6 +3,26 @@
 Your LinkedIn credentials, the optional AI setup and the optional Telegram notifications. Also
 available in the **Account** tab of the control panel.
 
+## Keeping secrets out of the config files: `.env`
+
+The password, the AI key and the Telegram token can live in a `.env` file at the project root
+instead of `config/secrets.py` or the control panel. Copy `.env.example` to `.env` and fill in
+what you use; `.env` is ignored by git, `config/secrets.py` is **not**, so a password typed
+there is one commit away from being published.
+
+| Variable | Setting it replaces |
+|---|---|
+| `LINKEDIN_USERNAME` | `username` |
+| `LINKEDIN_PASSWORD` | `password` |
+| `LLM_API_KEY` | `llm_api_key` |
+| `TELEGRAM_BOT_TOKEN` | `telegram_bot_token` |
+| `TELEGRAM_CHAT_ID` | `telegram_chat_id` |
+
+Precedence, highest first: a real environment variable, then `.env`, then what the control
+panel saved (`user_config.json`), then the defaults in `config/secrets.py`. A field that comes
+from the environment is shown disabled in the control panel with a note saying so. Only these
+five settings have an environment name; everything else stays in the config files and the panel.
+
 ## LinkedIn login (optional)
 
 | Setting | What it is |

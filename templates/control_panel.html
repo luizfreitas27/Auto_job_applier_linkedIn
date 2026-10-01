@@ -411,6 +411,22 @@
             return box;
         }
 
+        // Fields the server says come from the environment or .env: shown, but not editable.
+        function lockEnvFields() {
+            var locked = CONFIG._locked || {};
+            Object.keys(locked).forEach(function (cm) {
+                locked[cm].forEach(function (key) {
+                    var node = document.getElementById('f__' + cm + '__' + key);
+                    if (!node) return;
+                    node.disabled = true;
+                    var box = node.closest('.field');
+                    if (box && !box.querySelector('.env-note')) {
+                        box.appendChild(el('p', { class: 'help env-note', text: 'Set by an environment variable or the .env file; change it there.' }));
+                    }
+                });
+            });
+        }
+
         function buildTabs() {
             var tabs = document.getElementById('tabs');
             var panels = document.getElementById('panels');
@@ -462,6 +478,7 @@
             wireAi();
             updateModelLists();
             applyAiState();
+            lockEnvFields();
 
             showTab(SCHEMA.length ? SCHEMA[0].section : 'Run');
         }
@@ -937,6 +954,8 @@
             var changed = 0;
             SCHEMA.forEach(function (section) {
                 section.fields.forEach(function (field) {
+                    var lockedKeys = (CONFIG._locked || {})[field.config_module] || [];
+                    if (lockedKeys.indexOf(field.key) !== -1) return;
                     var current = readControlValue(field);
                     if (current === undefined) return;
                     var base = baselineValue(field.config_module, field.key);

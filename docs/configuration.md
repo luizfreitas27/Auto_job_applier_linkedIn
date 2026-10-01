@@ -10,6 +10,9 @@ to change it, and they work together:
 - **Editing `config/*.py` directly** — the classic route, and the only route for the
   handful of settings the control panel does not expose.
 
+The five secrets (login, AI key, Telegram) can also come from the environment or a `.env`
+file, which win over everything else; see [secrets](config-secrets.md).
+
 `user_config.json` is applied *over* the defaults in `config/*.py`, and only for names that
 already exist there — so the panel can never introduce a setting the code does not know
 about. If `user_config.json` does not exist, everything comes from the `.py` files and the

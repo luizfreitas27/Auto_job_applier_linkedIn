@@ -6,12 +6,19 @@ GitHub:     https://github.com/GodsScion/Auto_job_applier_linkedIn
 
 Loads user settings saved by the local control panel (see app.py) from
 `user_config.json` at the project root, and applies them over the Python
-defaults defined in the config/*.py files.
+defaults defined in the config/*.py files. Secrets can also come from the
+environment or a `.env` file, which win over both.
 
-If `user_config.json` does not exist, everything here is a no-op and the tool
-behaves exactly as it always has: configuration comes entirely from the
-config/*.py defaults. This keeps the classic "edit the .py files" workflow
-fully working for existing users.
+Precedence, highest first:
+  1. a real environment variable (LINKEDIN_PASSWORD, ...)
+  2. the same name in `.env` at the project root (gitignored)
+  3. `user_config.json` (written by the control panel, gitignored)
+  4. the defaults in config/*.py
+
+Only the five secret settings listed in SECRET_ENV_NAMES have an environment
+name: structured settings stay in the config files and the panel. If neither
+`.env` nor `user_config.json` exists, everything here is a no-op and the tool
+behaves exactly as it always has.
 '''
 
 import os
@@ -21,6 +28,67 @@ import json
 _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_CONFIG_DIR)
 USER_CONFIG_PATH = os.path.join(_ROOT_DIR, "user_config.json")
+ENV_FILE_PATH = os.path.join(_ROOT_DIR, ".env")
+
+# {config section: {setting: environment variable}} for the settings that may come from the
+# environment. Secrets only: a leaked config file must never carry them, and an operator
+# running the bot on a server wants them in the environment, not on disk.
+SECRET_ENV_NAMES = {
+    "secrets": {
+        "username": "LINKEDIN_USERNAME",
+        "password": "LINKEDIN_PASSWORD",
+        "llm_api_key": "LLM_API_KEY",
+        "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+        "telegram_chat_id": "TELEGRAM_CHAT_ID",
+    },
+}
+
+
+def load_env_file(path: str = None) -> dict:
+    '''
+    The KEY=VALUE pairs in `.env` (or `path`). Blank lines and `#` comments are skipped,
+    an optional `export ` prefix and surrounding single or double quotes are removed, and a
+    line without `=` is ignored. Missing or unreadable file: {}. Never raises.
+    '''
+    values = {}
+    try:
+        with open(path or ENV_FILE_PATH, "r", encoding="utf-8") as file:
+            lines = file.read().splitlines()
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return {}
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#") or "=" not in text:
+            continue
+        if text.startswith("export "):
+            text = text[len("export "):].strip()
+        key, _, value = text.partition("=")
+        key, value = key.strip(), value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def env_overrides(section_name: str) -> dict:
+    '''
+    {setting: value} for the settings of `section_name` that the environment provides. A
+    real environment variable wins over `.env`; empty values count as "not set".
+    '''
+    names = SECRET_ENV_NAMES.get(section_name, {})
+    if not names:
+        return {}
+    fromFile = load_env_file()
+    found = {}
+    for setting, envName in names.items():
+        value = os.environ.get(envName)
+        if value is None or value == "":
+            value = fromFile.get(envName)
+        if value is not None and value != "":
+            found[setting] = value
+    return found
 
 
 def load_user_config() -> dict:
@@ -45,11 +113,12 @@ def apply(module_name: str, module_globals: dict) -> None:
       dotted part is the section name looked up in the JSON ("settings").
     - Only keys that ALREADY exist as globals in the module are applied, so the
       JSON can never introduce new names into the config namespace.
+    - Environment / `.env` values (see SECRET_ENV_NAMES) are applied last and win.
     '''
     section_name = module_name.split(".")[-1]
     section = load_user_config().get(section_name, {})
     if not isinstance(section, dict):
-        return
-    for key, value in section.items():
+        section = {}
+    for key, value in {**section, **env_overrides(section_name)}.items():
         if key in module_globals:
             module_globals[key] = value
