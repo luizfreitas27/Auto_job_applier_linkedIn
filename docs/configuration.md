@@ -22,7 +22,7 @@ tool behaves exactly as it always has. Nothing is ever uploaded anywhere.
 | 1 | [`config/personals.py`](config-personals.md) | Your name, phone, address, and the equal-opportunity answers |
 | 2 | [`config/questions.py`](config-questions.md) | Answers to Easy Apply questions: experience, work authorization, salary, notice period, resume path |
 | 3 | [`config/search.py`](config-search.md) | What to search for, which filters to apply, and which jobs to skip |
-| 4 | [`config/secrets.py`](config-secrets.md) | LinkedIn login (optional) and the optional AI setup |
+| 4 | [`config/secrets.py`](config-secrets.md) | LinkedIn login (optional), the optional AI setup and optional Telegram notifications |
 | 5 | [`config/settings.py`](config-settings.md) | How the bot itself runs: click gap, background mode, screen awake, driver management |
 
 Then run `runAiBot.py` and watch it work. Or run `app.py` for the control panel, which also

@@ -61,7 +61,7 @@ Full documentation lives in **[`docs/`](docs/README.md)**.
 | → [`personals.py`](docs/config-personals.md) | Your name, phone, address, equal-opportunity answers |
 | → [`questions.py`](docs/config-questions.md) | Easy Apply answers: experience, work authorization, salary, notice period, resume |
 | → [`search.py`](docs/config-search.md) | Search terms, LinkedIn filters, skip rules, visa-sponsorship filtering |
-| → [`secrets.py`](docs/config-secrets.md) | LinkedIn login and the optional AI setup |
+| → [`secrets.py`](docs/config-secrets.md) | LinkedIn login, the optional AI setup and Telegram notifications |
 | → [`settings.py`](docs/config-settings.md) | How the bot runs: click gap, background mode, safe mode, dry runs |
 | [Contributing](CONTRIBUTING.md) | Code guidelines, where to send PRs, running the tests |
 | [Support and community](docs/support.md) | Discord, GitHub Discussions, socials, sponsoring |

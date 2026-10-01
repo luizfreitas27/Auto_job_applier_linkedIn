@@ -136,6 +136,13 @@ the AI sees is `profile.build_candidate_profile()`, assembled from the config mo
 (never phone, street, zip, email, citizenship status or current salary) plus
 `user_information_all`.
 
+### Notifications (`modules/notify.py`)
+
+`send_message(text, token, chat_id)` posts to the Telegram Bot API with the standard
+library; it is a no-op when either setting is blank and returns False after one warning on any
+failure, never raising. `runAiBot.main()` calls `notify_run_end()` (the run summary) in its
+`finally` and `notify_error()` from the fatal handlers; both read the live secrets.
+
 ### Logging
 
 One stdlib logger, `auto_job_applier`, configured in `modules/helpers.py` (bare message to
