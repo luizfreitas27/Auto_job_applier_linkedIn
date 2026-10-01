@@ -502,6 +502,21 @@ def is_sensitive_question(label: str) -> bool:
     return find_bad_word(label, sensitive_terms) is not None
 
 
+def lookup_unless_sensitive(label_org: str, kind: str, approximate: bool = True) -> tuple:
+    '''
+    `answers_memory.lookup` guarded by the sensitive-question rule: a sensitive question is
+    never looked up, so it can never be answered from memory. Returns (entry | None, approximate).
+    '''
+    if is_sensitive_question(label_org):
+        return None, False
+    return answers_memory.lookup(label_org, kind, approximate=approximate)
+
+
+def memory_hit_message(label_org: str, answer: str, remembered, approximate: bool) -> str:
+    '''The one log line every memory hit prints, so a grep for "Memory answered" finds them all.'''
+    return f'Memory answered "{label_org}"{" (approximate match)" if approximate else ""}: "{answer}" [{remembered.state}]'
+
+
 def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | None, job_link: str | None) -> str:
     '''
     The fallback for an unrecognised question in a `kind` control: the answer memory first,
@@ -510,10 +525,10 @@ def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | N
     '''
     if is_sensitive_question(label_org):
         return ""
-    remembered, approximate = answers_memory.lookup(label_org, kind)
+    remembered, approximate = lookup_unless_sensitive(label_org, kind)
     if remembered is not None:
         answers_memory.record_use(remembered, job_link)
-        print_lg(f'Memory answered "{label_org}"{" (approximate match)" if approximate else ""}: "{remembered.answer}" [{remembered.state}]')
+        print_lg(memory_hit_message(label_org, remembered.answer, remembered, approximate))
         return remembered.answer
     aiAnswer = ""
     if use_AI and aiClient:
@@ -537,9 +552,7 @@ def remembered_option(label_org: str, kind: str, option_texts: list[str], job_li
     (exact, then `match_answer_to_option`), so "Yes" works for "Yes/No" and "Yes, I am".
     Sensitive questions are never looked up. Counts the use when it matches.
     '''
-    if is_sensitive_question(label_org):
-        return None
-    remembered, approximate = answers_memory.lookup(label_org, kind)
+    remembered, approximate = lookup_unless_sensitive(label_org, kind)
     if remembered is None:
         return None
     matched = next((i for i, option in enumerate(option_texts) if option == remembered.answer), None)
@@ -549,7 +562,7 @@ def remembered_option(label_org: str, kind: str, option_texts: list[str], job_li
         print_lg(f'Memory has "{remembered.answer}" for "{label_org}" but no option here matches it.')
         return None
     answers_memory.record_use(remembered, job_link)
-    print_lg(f'Memory answered "{label_org}"{" (approximate match)" if approximate else ""}: "{option_texts[matched]}" [{remembered.state}]')
+    print_lg(memory_hit_message(label_org, option_texts[matched], remembered, approximate))
     return matched
 
 
@@ -801,8 +814,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 except NoSuchElementException:
                     # The exact text isn't an option; map our answer onto the nearest option.
                     matched = match_answer_to_option(answer, optionsText)
-                    if matched is None and answer is None:
-                        # Unrecognised question: a remembered answer may fit this form's options.
+                    if matched is None and not answer:
+                        # No configured answer (unrecognised, or a setting left blank): a
+                        # remembered answer may fit this form's options.
                         matched = remembered_option(label_org, "select", optionsText, job_link)
                     if matched is not None:
                         select.select_by_visible_text(optionsText[matched])
@@ -832,7 +846,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             # a Yes on a real application.
             answer = None
             label = label_org.lower()
-            questionTitle = label_org          # `label_org` grows the option list below; the memory keys on the bare title
+            # ponytail: `label_org` is turned into a log string ("title [ "opt"<urn>, ...") a few
+            # lines down and every later use expects that; keep the bare title for the memory.
+            questionTitle = label_org
 
             label_org += ' [ '
             options = radio.find_elements(By.TAG_NAME, 'input')
@@ -859,7 +875,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     actions.move_to_element(foundOption).click().perform()
                 else:
                     matched = match_answer_to_option(answer, option_texts)
-                    if matched is None and answer is None:
+                    if matched is None and not answer:
                         matched = remembered_option(questionTitle, "radio", option_texts, job_link)
                     if matched is None:
                         # Never guess: `options[0]` clicked whatever LinkedIn rendered first
@@ -1009,9 +1025,13 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             checked = prev_answer
             if not prev_answer:
                 # The question the memory knows this box by: the visible text, prefixed by
-                # the group title when the form has one.
-                checkboxLabel = answer if label_org == "Unknown" else f'{label_org} {answer}'
-                remembered, _ = (None, False) if is_sensitive_question(checkboxLabel) else answers_memory.lookup(checkboxLabel, "checkbox")
+                # the group title when the form has one. A box with no text at all has no
+                # identity, so it is never remembered: an approved "Unknown" would tick every
+                # unlabeled box on every form.
+                checkboxLabel = " ".join(part for part in (label_org, answer) if part != "Unknown")
+                # Exact matching only: a near-identical attestation at another employer is a
+                # different legal text, and approving one must not tick the other.
+                remembered, _ = lookup_unless_sensitive(checkboxLabel, "checkbox", approximate=False) if checkboxLabel else (None, False)
                 if remembered is not None and remembered.state == "approved" and remembered.answer == "checked":
                     # The user approved ticking this box in the review queue. Only an approved
                     # remembered answer may tick: never a pending one, never the AI.
@@ -1033,7 +1053,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     unanswered_questions.add(blocked)
                     # Offer it for review: approving "checked" lets the bot tick it next time.
                     # A sensitive box (e.g. "I certify I am a U.S. citizen") is never offered.
-                    if remembered is None and not is_sensitive_question(checkboxLabel):
+                    if remembered is None and checkboxLabel and not is_sensitive_question(checkboxLabel):
                         answers_memory.remember(checkboxLabel, "checkbox", "checked", source="form", job_link=job_link)
             questions_list.add((f'{label} ([X] {answer})', checked, "checkbox", prev_answer))
             continue

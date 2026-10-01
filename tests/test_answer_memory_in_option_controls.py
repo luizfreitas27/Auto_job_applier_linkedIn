@@ -213,6 +213,26 @@ def test_memory_is_not_consulted_for_a_recognised_dropdown_question(bot, memory,
     assert entry.uses == 0
 
 
+def test_a_blank_configured_answer_lets_memory_answer_the_dropdown(bot, memory, monkeypatch):
+    '''`gender = ""` means "nothing configured", the same as an unrecognised question in the text branch.'''
+    monkeypatch.setattr(bot, "gender", "")
+    memory.remember("Gender", "select", "Male", source="user")
+    modal, select = dropdown(bot, monkeypatch, "Gender", ["Select an option", "Male", "Female"])
+    bot.answer_questions(modal, set(), "Remote", job_link=JOB)
+    assert select.picked == "Male"
+
+
+def test_a_sensitive_dropdown_question_never_uses_memory(bot, memory, monkeypatch):
+    monkeypatch.setattr(bot, "require_visa", "")
+    entry = memory.remember("Will you require visa sponsorship?", "select", "No", source="user")
+    modal, select = dropdown(bot, monkeypatch, "Will you require visa sponsorship?", ["Select an option", "Yes", "No"])
+
+    bot.answer_questions(modal, set(), "Remote", job_link=JOB)
+
+    assert select.picked is None
+    assert entry.uses == 0
+
+
 def test_a_remembered_dropdown_answer_never_fills_a_text_question(bot, memory, monkeypatch):
     memory.remember("Are you willing to relocate?", "text", "Yes", source="user")
     modal, select = dropdown(bot, monkeypatch, "Are you willing to relocate?", ["Select an option", "Yes", "No"])
@@ -237,6 +257,17 @@ def test_a_remembered_radio_answer_respects_yes_no_polarity(bot, memory, monkeyp
                                         ["Yes, I do", "No, I do not"])
     bot.answer_questions(modal, set(), "Remote", job_link=JOB)
     assert mouse.clicked is options[1]
+
+
+def test_when_no_radio_option_matches_the_remembered_text_the_group_is_left_alone(bot, memory, monkeypatch):
+    entry = memory.remember("Preferred shift", "radio", "Night", source="user")
+    modal, mouse, _ = radio_group(bot, monkeypatch, "Preferred shift", ["Morning", "Afternoon"])
+
+    bot.answer_questions(modal, set(), "Remote", job_link=JOB)
+
+    assert mouse.clicked is None
+    assert bot.unanswered_questions
+    assert entry.uses == 0
 
 
 def test_a_sensitive_radio_question_never_uses_memory(bot, memory, monkeypatch):
@@ -283,6 +314,30 @@ def test_an_unrecognised_unticked_checkbox_is_offered_for_review(bot, memory, mo
     assert found is not None
     assert found.answer == "checked" and found.state == "pending" and found.source == "form"
     assert found.last_job_link == JOB
+
+
+def test_a_checkbox_with_no_text_at_all_is_never_remembered_or_ticked(bot, memory, monkeypatch):
+    '''An approved "Unknown" would tick every unlabeled box on every form.'''
+    memory.remember("Unknown", "checkbox", "checked", source="user")
+    mouse = FakeMouse()
+    monkeypatch.setattr(bot, "actions", mouse)
+    question = FakeElement(children={".//input[@type='checkbox']": FakeCheckbox()})   # no label of any kind
+    modal = FakeElement(children={".//div[@data-test-form-element]": [question]})
+
+    bot.answer_questions(modal, set(), "Remote", job_link=JOB)
+
+    assert mouse.clicked is None
+    assert len(memory.entries) == 1                 # nothing new remembered
+
+
+def test_checkbox_matching_is_exact_never_approximate(bot, memory, monkeypatch):
+    '''A near-identical attestation at another employer is a different legal text.'''
+    memory.remember("I agree to the terms and conditions of Acme", "checkbox", "checked", source="user")
+    modal, mouse, _ = checkbox_question(bot, monkeypatch, "I agree to the terms and conditions of Acme Inc")
+
+    bot.answer_questions(modal, set(), "Remote", job_link=JOB)
+
+    assert mouse.clicked is None
 
 
 def test_the_group_title_is_part_of_the_checkbox_question(bot, memory, monkeypatch):

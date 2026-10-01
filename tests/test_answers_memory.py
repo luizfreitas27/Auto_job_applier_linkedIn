@@ -60,6 +60,12 @@ def test_a_reworded_question_matches_approximately_and_is_logged(memory, log_rec
     assert any("approximate" in record.getMessage() for record in log_records)
 
 
+def test_approximate_matching_can_be_turned_off(memory):
+    memory.remember("How many years of experience do you have with Python?", "text", "4", source="ai")
+    assert memory.lookup("How many years experience do you have with Python?", "text", approximate=False) == (None, False)
+    assert memory.lookup("How many years of experience do you have with Python?", "text", approximate=False)[0] is not None
+
+
 def test_a_different_question_below_the_threshold_does_not_match(memory):
     memory.remember("How many years of experience do you have with Python?", "text", "4", source="ai")
     found, _ = memory.lookup("How many years of experience do you have with Kubernetes?", "text")

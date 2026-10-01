@@ -138,11 +138,12 @@ class AnswerMemory:
             logger.warning("Could not save the answer memory to %s (%s).", self.path, error)
 
     # ------------------------------------------------------------------ queries
-    def lookup(self, label: str, kind: str) -> tuple[RememberedAnswer | None, bool]:
+    def lookup(self, label: str, kind: str, approximate: bool = True) -> tuple[RememberedAnswer | None, bool]:
         '''
         The remembered answer for `label` in a control of `kind`, and whether the match was
-        approximate. Exact match on the normalised label first; otherwise the most similar
-        entry of the same kind at or above SIMILARITY_THRESHOLD. (None, False) when nothing fits.
+        approximate. Exact match on the normalised label first; otherwise, if `approximate`,
+        the most similar entry of the same kind at or above SIMILARITY_THRESHOLD.
+        (None, False) when nothing fits.
         '''
         key = normalise(label)
         if not key:
@@ -151,6 +152,8 @@ class AnswerMemory:
         for entry in candidates:
             if entry.normalised == key:
                 return entry, False
+        if not approximate:
+            return None, False
         bestEntry, bestRatio = None, 0.0
         for entry in candidates:
             ratio = difflib.SequenceMatcher(None, key, entry.normalised).ratio()
