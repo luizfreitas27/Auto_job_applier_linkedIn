@@ -61,11 +61,11 @@ The bot's persistent record of answers it has given to unrecognised questions, k
 _Avoid_: cache, learned answers, Q&A store
 
 **Remembered answer**:
-One answer in the answer memory: a question (normalised label plus control kind), the answer text, where it came from (AI or the user) and its review state.
+One answer in the answer memory: a question (normalised label plus control kind), the answer text, where it came from (the AI, the user, or a form control the bot saw and left alone) and its review state.
 _Avoid_: memory entry, record, saved answer, learned answer
 
 **Review state**:
-Whether a remembered answer is **pending** (given by the AI, not yet seen by the user) or **approved** (the user confirmed or corrected it).
+Whether a remembered answer is **pending** (not yet confirmed by the user) or **approved** (the user confirmed or corrected it). Only approved answers may tick a checkbox.
 _Avoid_: status, verified, confirmed
 
 **Review queue**:
