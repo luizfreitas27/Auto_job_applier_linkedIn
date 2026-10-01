@@ -37,6 +37,7 @@ import importlib
 import config_schema
 from config import _overrides
 from modules import updater
+from modules.answers_memory import AnswerMemory, STATES
 
 app = Flask(__name__)
 
@@ -551,6 +552,74 @@ def api_logs():
         return jsonify({"content": content, "next_offset": offset + len(data)})
     except OSError as err:
         return jsonify({"content": "", "next_offset": offset, "error": str(err)})
+
+
+# ===========================================================================
+# Review queue (see modules/answers_memory.py). The memory reloads itself when
+# the bot, in its own process, changes the file, so every request sees fresh data.
+# ===========================================================================
+answers_memory = AnswerMemory()
+
+
+def _answer_to_json(entry) -> dict:
+    '''A remembered answer as the Answers tab consumes it.'''
+    return {
+        "id": entry.id, "question": entry.label, "kind": entry.kind, "answer": entry.answer,
+        "source": entry.source, "state": entry.state, "uses": entry.uses,
+        "last_job_link": entry.last_job_link, "updated_at": entry.updated_at,
+    }
+
+
+def _valid_state_or_none(raw: str | None):
+    '''A review state from the query string, None for "all", or ValueError for junk.'''
+    if raw in (None, "", "all"):
+        return None
+    if raw not in STATES:
+        raise ValueError(f"state must be one of {list(STATES)} or 'all'")
+    return raw
+
+
+@app.route('/api/answers', methods=['GET'])
+def api_list_answers():
+    '''Remembered answers, newest first, optionally filtered by ?state=pending|approved, plus the pending count.'''
+    try:
+        state = _valid_state_or_none(request.args.get("state"))
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+    return jsonify({"answers": [_answer_to_json(entry) for entry in answers_memory.list(state)],
+                    "pending_count": answers_memory.pending_count()})
+
+
+@app.route('/api/answers/<entry_id>', methods=['POST'])
+def api_approve_answer(entry_id):
+    '''Approve a remembered answer, replacing its text first when the body carries "answer".'''
+    payload = request.get_json(silent=True) or {}
+    answer = payload.get("answer")
+    if answer is not None:
+        answer = str(answer).strip()
+        if answer == "":
+            return jsonify({"error": "An approved answer cannot be empty; delete it instead."}), 400
+    entry = answers_memory.approve(entry_id, answer)
+    if entry is None:
+        return jsonify({"error": "No remembered answer with that id."}), 404
+    return jsonify({"answer": _answer_to_json(entry), "pending_count": answers_memory.pending_count()})
+
+
+@app.route('/api/answers/<entry_id>', methods=['DELETE'])
+def api_delete_answer(entry_id):
+    '''Forget one remembered answer, so its question is treated as new again.'''
+    if not answers_memory.delete(entry_id):
+        return jsonify({"error": "No remembered answer with that id."}), 404
+    return jsonify({"deleted": 1, "pending_count": answers_memory.pending_count()})
+
+
+@app.route('/api/answers', methods=['DELETE'])
+def api_delete_answers_in_state():
+    '''Forget every remembered answer in ?state=pending|approved (bulk clear of the review queue).'''
+    state = request.args.get("state")
+    if state not in STATES:
+        return jsonify({"error": f"state must be one of {list(STATES)}"}), 400
+    return jsonify({"deleted": answers_memory.delete_all(state), "pending_count": answers_memory.pending_count()})
 
 
 # ===========================================================================

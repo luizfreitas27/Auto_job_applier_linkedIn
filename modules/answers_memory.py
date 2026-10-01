@@ -15,11 +15,13 @@ and an approximate hit is logged with both labels so a wrong reuse can be audite
 This module knows nothing about which questions are sensitive; the bot decides that before
 it ever consults the memory (see `is_sensitive_question` in runAiBot.py).
 
-ponytail: one process at a time. The file is loaded once and every save rewrites it from
-memory, so the bot (which owns the file during a run) and the control panel (which will edit
-it for the review queue) must not write concurrently. The panel should reload before each
-operation and avoid writing while the bot runs; move to per-entry writes or a lock if that
-ever bites.
+Two processes share the file: the bot during a run and the control panel's review queue.
+Every public method first checks whether the file changed on disk since it was last read
+(size and mtime) and reloads if so, and every change is saved at once, so each operation is
+a read-modify-write on fresh data. Entries handed out earlier are looked up again by id
+before being changed, never trusted as current.
+ponytail: no lock, so two writes inside the same instant can still lose one; a human
+clicking Approve while the bot saves is the realistic worst case and it loses one use count.
 '''
 
 from __future__ import annotations
@@ -102,14 +104,29 @@ class AnswerMemory:
     def __init__(self, path: str | os.PathLike = MEMORY_PATH) -> None:
         self.path = Path(path)
         self._entries: list[RememberedAnswer] | None = None
+        self._loaded_stamp: tuple[int, int] | None = None     # (mtime_ns, size) of the file as last read
 
     # ------------------------------------------------------------------ storage
+    def _stamp(self) -> tuple[int, int] | None:
+        '''The file's (mtime_ns, size), or None when it does not exist.'''
+        try:
+            info = os.stat(self.path)
+            return (info.st_mtime_ns, info.st_size)
+        except OSError:
+            return None
+
     @property
     def entries(self) -> list[RememberedAnswer]:
-        '''All remembered answers, loading the file on first access.'''
-        if self._entries is None:
+        '''All remembered answers, reloaded whenever another process changed the file.'''
+        stamp = self._stamp()
+        if self._entries is None or stamp != self._loaded_stamp:
             self._entries = self._load()
+            self._loaded_stamp = stamp
         return self._entries
+
+    def _current(self, entry: RememberedAnswer) -> RememberedAnswer | None:
+        '''The live copy of an entry handed out earlier (it may have been reloaded since).'''
+        return self.get(entry.id)
 
     def _load(self) -> list[RememberedAnswer]:
         '''Read the file. Missing: empty. Unreadable or not JSON: empty, with one warning.'''
@@ -134,6 +151,7 @@ class AnswerMemory:
             with open(temporaryPath, "w", encoding="utf-8") as file:
                 json.dump(payload, file, indent=2, ensure_ascii=False)
             os.replace(temporaryPath, self.path)
+            self._loaded_stamp = self._stamp()
         except OSError as error:
             logger.warning("Could not save the answer memory to %s (%s).", self.path, error)
 
@@ -213,8 +231,11 @@ class AnswerMemory:
 
     def record_use(self, entry: RememberedAnswer, job_link: str | None = None) -> None:
         '''Count one more use of a remembered answer, on `job_link` if given.'''
-        entry.uses += 1
-        self._touch(entry, job_link)
+        live = self._current(entry)
+        if live is None:                    # deleted in the review queue meanwhile; nothing to count
+            return
+        live.uses += 1
+        self._touch(live, job_link)
 
     def approve(self, entry_id: str, answer: str | None = None) -> RememberedAnswer | None:
         '''Mark an entry approved, optionally replacing its answer first. None if the id is unknown.'''
@@ -230,9 +251,18 @@ class AnswerMemory:
 
     def delete(self, entry_id: str) -> bool:
         '''Forget an entry. True if something was removed.'''
-        before = len(self.entries)
-        self._entries = [entry for entry in self.entries if entry.id != entry_id]
-        removed = len(self._entries) != before
+        kept = [entry for entry in self.entries if entry.id != entry_id]
+        removed = len(kept) != len(self.entries)
         if removed:
+            self._entries = kept
+            self.save()
+        return removed
+
+    def delete_all(self, state: str) -> int:
+        '''Forget every entry in `state` (e.g. clear the whole pending queue). Returns how many.'''
+        kept = [entry for entry in self.entries if entry.state != state]
+        removed = len(self.entries) - len(kept)
+        if removed:
+            self._entries = kept
             self.save()
         return removed

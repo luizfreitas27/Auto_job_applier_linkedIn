@@ -79,6 +79,10 @@ user's config, `runAiBot.py` reads them defensively with `globals().get("name", 
 - `runAiBot.py` detects a non-interactive run (`run_in_background` or stdout not a TTY, which
   is the case under the panel) and calls `dialogs.set_enabled(False)`, because desktop
   dialogs are blocking Tk modals nobody can click there.
+- Review queue: `GET/DELETE /api/answers?state=` and `POST/DELETE /api/answers/<id>` over a
+  module-level `AnswerMemory`, rendered by the Answers tab (`buildAnswersPanel`/`loadAnswers`
+  in `control_panel.html`). The memory reloads itself when the file's mtime/size changes, so
+  the bot process and the panel share `answers_memory.json` without clobbering each other.
 - `modules/updater.py`: compares `VERSION` with the upstream raw file and offers
   `git pull --ff-only`; it refuses unless `origin` points at the upstream repo, so in this
   fork the update button does nothing.
@@ -115,8 +119,9 @@ unrecognised unticked box is remembered as pending with source `form`. `pause_fo
 "Help Needed" pause: it snapshots the form with `read_form_state()` before and after the
 dialog and `capture_manual_answers()` remembers what the user filled in as approved (source
 `user`). Form locators and title readers (`form_question_xpath`, `select_title`,
-`radio_title`, `text_title`, `textarea_title`, `checkbox_key`) are shared by both. The module itself knows nothing
-about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
+`radio_title`, `text_title`, `textarea_title`, `checkbox_key`) are shared by both. Every public method reloads the file if another process changed it, and
+`record_use` re-finds its entry by id, so entries are never trusted as current. The module
+itself knows nothing about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
 with `monkeypatch.setattr(bot, "answers_memory", ...)`.
 
 ### AI layer (`modules/ai/`)

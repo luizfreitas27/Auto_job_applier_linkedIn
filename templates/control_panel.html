@@ -214,6 +214,13 @@
         table.jobs a:hover { text-decoration: underline; }
         .tick { color: var(--ok); font-weight: 700; }
         .muted-small { color: var(--muted); font-size: 13px; }
+        .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+        .filters button.btn.secondary.on { background: var(--brand); color: #fff; }
+        table.jobs input.answer-edit { width: 100%; min-width: 160px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+        table.jobs .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+        table.jobs .row-actions .btn { padding: 4px 10px; font-size: 13px; }
+        .state-pending { color: #b45309; font-weight: 600; }
+        .state-approved { color: #15803d; font-weight: 600; }
 
         /* --- Responsive --- */
         @media (max-width: 640px) {
@@ -440,6 +447,14 @@
             tabs.appendChild(runBtn);
             panels.appendChild(buildRunPanel());
 
+            // Extra "Answers" tab: the review queue (modules/answers_memory.py).
+            var answersBtn = el('button', { type: 'button', text: 'Answers', id: 'answersTabBtn' });
+            answersBtn.dataset.tab = 'Answers';
+            answersBtn.addEventListener('click', function () { showTab('Answers'); });
+            tabs.appendChild(answersBtn);
+            panels.appendChild(buildAnswersPanel());
+            refreshPendingCount();
+
             wireAi();
             updateModelLists();
             applyAiState();
@@ -456,8 +471,10 @@
                 p.classList.toggle('active', p.dataset.tab === name);
             });
             var isRun = (name === 'Run');
-            document.getElementById('savebar').style.display = isRun ? 'none' : 'flex';
+            var isAnswers = (name === 'Answers');
+            document.getElementById('savebar').style.display = (isRun || isAnswers) ? 'none' : 'flex';
             if (isRun) { refreshStatus(); refreshLogs(); loadAppliedJobs(); }
+            if (isAnswers) { loadAnswers(); }
         }
 
         // ---- AI master switch + model lists ----
@@ -497,6 +514,117 @@
             if (cb) cb.addEventListener('change', applyAiState);
             var prov = document.getElementById('f__secrets__ai_provider');
             if (prov) prov.addEventListener('change', updateModelLists);
+        }
+
+        // ---- Answers tab (review queue) ----
+        var answersFilter = 'pending';
+
+        function buildAnswersPanel() {
+            var panel = el('div', { class: 'panel' });
+            panel.dataset.tab = 'Answers';
+            panel.appendChild(el('div', { class: 'note', html:
+                'Answers the tool gave to questions it did not recognise. <strong>Pending</strong> ones came from the AI ' +
+                '(or are boxes it left unticked) and have already been used; approve or correct them here and the tool ' +
+                'will reuse your version. Sensitive questions (work authorization, salary, disability...) never appear here.' }));
+            var filters = el('div', { class: 'filters' });
+            ['pending', 'approved', 'all'].forEach(function (state) {
+                var b = el('button', { class: 'btn secondary', type: 'button', text: state.charAt(0).toUpperCase() + state.slice(1) });
+                b.dataset.filter = state;
+                b.addEventListener('click', function () { answersFilter = state; loadAnswers(); });
+                filters.appendChild(b);
+            });
+            var clear = el('button', { class: 'btn danger', type: 'button', text: 'Delete all pending', id: 'clearPendingBtn' });
+            clear.addEventListener('click', function () {
+                if (!confirm('Delete every pending answer? The questions will be treated as new next time.')) return;
+                fetch('/api/answers?state=pending', { method: 'DELETE', headers: PANEL_HEADERS })
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) { setPendingCount(d.pending_count); loadAnswers(); })
+                    .catch(function () {});
+            });
+            filters.appendChild(clear);
+            panel.appendChild(filters);
+            var holder = el('div', { id: 'answersHolder', style: 'overflow-x:auto;' });
+            holder.appendChild(el('p', { class: 'muted-small', text: 'Loading...' }));
+            panel.appendChild(holder);
+            return panel;
+        }
+
+        function setPendingCount(count) {
+            var btn = document.getElementById('answersTabBtn');
+            if (btn) btn.textContent = count > 0 ? 'Answers (' + count + ')' : 'Answers';
+        }
+
+        function refreshPendingCount() {
+            fetch('/api/answers?state=pending').then(function (r) { return r.json(); })
+                .then(function (d) { setPendingCount(d.pending_count); })
+                .catch(function () {});
+        }
+
+        function answerAction(method, id, body) {
+            var opts = { method: method, headers: Object.assign({ 'Content-Type': 'application/json' }, PANEL_HEADERS) };
+            if (body) opts.body = JSON.stringify(body);
+            return fetch('/api/answers/' + encodeURIComponent(id), opts)
+                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, body: d }; }); });
+        }
+
+        function loadAnswers() {
+            var holder = document.getElementById('answersHolder');
+            if (!holder) return;
+            document.querySelectorAll('.filters button[data-filter]').forEach(function (b) {
+                b.classList.toggle('on', b.dataset.filter === answersFilter);
+            });
+            fetch('/api/answers?state=' + answersFilter).then(function (r) { return r.json(); }).then(function (data) {
+                setPendingCount(data.pending_count);
+                holder.innerHTML = '';
+                var rows = data.answers || [];
+                if (rows.length === 0) {
+                    holder.appendChild(el('p', { class: 'muted-small', text: answersFilter === 'pending'
+                        ? 'Nothing to review. New answers appear here after a run.' : 'No answers here yet.' }));
+                    return;
+                }
+                var table = el('table', { class: 'jobs' });
+                var hr = el('tr');
+                ['Question', 'Kind', 'Answer', 'From', 'State', 'Used', 'Last job', ''].forEach(function (h) { hr.appendChild(el('th', { text: h })); });
+                table.appendChild(el('thead', {}, [hr]));
+                var tbody = el('tbody');
+                rows.forEach(function (row) {
+                    var tr = el('tr');
+                    tr.appendChild(el('td', { text: row.question }));
+                    tr.appendChild(el('td', { text: row.kind }));
+                    var edit = el('input', { type: 'text', class: 'answer-edit', 'aria-label': 'Answer' });
+                    edit.value = row.answer;
+                    if (row.kind === 'checkbox') edit.disabled = true;      // "checked" is the only value a box can have
+                    tr.appendChild(el('td', {}, [edit]));
+                    tr.appendChild(el('td', { text: row.source === 'ai' ? 'AI' : row.source === 'user' ? 'You' : 'Form' }));
+                    tr.appendChild(el('td', {}, [el('span', { class: 'state-' + row.state, text: row.state })]));
+                    tr.appendChild(el('td', { text: String(row.uses) }));
+                    var jobCell = el('td');
+                    if (row.last_job_link) jobCell.appendChild(el('a', { href: row.last_job_link, target: '_blank', rel: 'noopener', text: 'Open' }));
+                    tr.appendChild(jobCell);
+                    var actions = el('div', { class: 'row-actions' });
+                    var approve = el('button', { class: 'btn', type: 'button', text: row.state === 'pending' ? 'Approve' : 'Save' });
+                    approve.addEventListener('click', function () {
+                        var body = row.kind === 'checkbox' ? {} : { answer: edit.value };
+                        answerAction('POST', row.id, body).then(function (res) {
+                            if (!res.ok) { alert('Could not save: ' + (res.body.error || 'unknown error')); return; }
+                            loadAnswers();
+                        });
+                    });
+                    var del = el('button', { class: 'btn danger', type: 'button', text: 'Delete' });
+                    del.addEventListener('click', function () {
+                        answerAction('DELETE', row.id).then(function () { loadAnswers(); });
+                    });
+                    actions.appendChild(approve);
+                    actions.appendChild(del);
+                    tr.appendChild(el('td', {}, [actions]));
+                    tbody.appendChild(tr);
+                });
+                table.appendChild(tbody);
+                holder.appendChild(table);
+            }).catch(function (err) {
+                holder.innerHTML = '';
+                holder.appendChild(el('p', { class: 'muted-small', text: 'Could not load answers: ' + err }));
+            });
         }
 
         // ---- Run tab ----

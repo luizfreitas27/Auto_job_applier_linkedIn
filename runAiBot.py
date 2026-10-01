@@ -1742,6 +1742,20 @@ def run(total_runs: int) -> int:
 
 linkedIn_tab = False
 
+
+def run_summary(total_runs: int) -> str:
+    '''The **run summary**: the counts the bot reports when a run ends, including answers awaiting review.'''
+    try:
+        pendingAnswers = answers_memory.pending_count()
+    except Exception as e:
+        logger.warning("Could not count pending answers for the summary. %s", e)
+        pendingAnswers = 0
+    return ("Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\n"
+            "Failed jobs: {}\nIrrelevant jobs skipped: {}\nPending answers to review in the control panel: {}\n").format(
+                total_runs, easy_applied_count, external_jobs_count, easy_applied_count + external_jobs_count,
+                failed_count, skip_count, pendingAnswers)
+
+
 def main() -> None:
     dialogs.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
     total_runs = 1
@@ -1788,7 +1802,7 @@ def main() -> None:
         critical_error_log("In Applier Main", e)
         dialogs.alert(e,alert_title)
     finally:
-        summary = "Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\nFailed jobs: {}\nIrrelevant jobs skipped: {}\n".format(total_runs,easy_applied_count,external_jobs_count,easy_applied_count + external_jobs_count,failed_count,skip_count)
+        summary = run_summary(total_runs)
         print_lg(summary)
         print_lg("\n\nTotal runs:                     {}".format(total_runs))
         print_lg("Jobs Easy Applied:              {}".format(easy_applied_count))
