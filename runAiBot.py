@@ -1758,19 +1758,24 @@ def run_summary(total_runs: int) -> str:
                 failed_count, skip_count, pendingAnswers)
 
 
+def telegram_settings() -> tuple[str, str]:
+    '''
+    (token, chat id) as configured right now. Read from the module rather than the star-imported
+    globals so a value the control panel saved (applied by config/_overrides at import) is the
+    one used, and so tests can patch the module.
+    '''
+    return secrets_config.telegram_bot_token, secrets_config.telegram_chat_id
+
+
 def notify_run_end(summary: str) -> bool:
     '''Send the run summary to Telegram, if notifications are configured. Never raises.'''
-    return notify.send_message(f"Auto Job Applier: run finished.\n\n{summary}",
-                               getattr(secrets_config, "telegram_bot_token", ""),
-                               getattr(secrets_config, "telegram_chat_id", ""))
+    return notify.send_message(f"Auto Job Applier: run finished.\n\n{summary}", *telegram_settings())
 
 
 def notify_error(reason: str, error: BaseException | None = None) -> bool:
     '''Tell the user on Telegram that the bot stopped because of an error. Never raises.'''
     detail = f"\n\n{type(error).__name__}: {error}" if error is not None else ""
-    return notify.send_message(f"Auto Job Applier stopped: {reason}{detail}",
-                               getattr(secrets_config, "telegram_bot_token", ""),
-                               getattr(secrets_config, "telegram_chat_id", ""))
+    return notify.send_message(f"Auto Job Applier stopped: {reason}{detail}", *telegram_settings())
 
 
 def main() -> None:

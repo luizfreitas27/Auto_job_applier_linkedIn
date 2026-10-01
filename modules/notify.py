@@ -21,8 +21,9 @@ import urllib.request
 
 from modules.helpers import logger
 
-TELEGRAM_API = "https://api.telegram.org/bot%s/sendMessage"
+SEND_MESSAGE_URL = "https://api.telegram.org/bot%s/sendMessage"
 MAX_MESSAGE_LENGTH = 4096          # Telegram's limit per message
+_half_configured_warned = False
 
 
 def is_configured(token: str | None, chat_id: str | None) -> bool:
@@ -37,10 +38,18 @@ def send_message(text: str, token: str | None, chat_id: str | None, timeout: flo
     answers with an error, or anything else goes wrong: a notification must never stop a run.
     '''
     if not is_configured(token, chat_id):
+        global _half_configured_warned
+        if (token or "").strip() or str(chat_id or "").strip():
+            # One of the two is filled in: the user meant to turn this on. Say so once, as a
+            # warning, and stay off; never abort a run over a notification setting.
+            if not _half_configured_warned:
+                logger.warning("Telegram notifications are off: set BOTH telegram_bot_token and telegram_chat_id "
+                               "in config/secrets.py (or the Account tab) to turn them on.")
+                _half_configured_warned = True
         return False
     body = json.dumps({"chat_id": str(chat_id).strip(), "text": (text or "")[:MAX_MESSAGE_LENGTH],
                        "disable_web_page_preview": True}).encode("utf-8")
-    request = urllib.request.Request(TELEGRAM_API % token.strip(), data=body,
+    request = urllib.request.Request(SEND_MESSAGE_URL % token.strip(), data=body,
                                      headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

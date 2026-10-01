@@ -1,7 +1,7 @@
-# `config/secrets.py` — login and AI
+# `config/secrets.py` — login, AI and notifications
 
-Your LinkedIn credentials and the optional AI setup. Also available in the **Account** tab
-of the control panel.
+Your LinkedIn credentials, the optional AI setup and the optional Telegram notifications. Also
+available in the **Account** tab of the control panel.
 
 ## LinkedIn login (optional)
 
@@ -53,8 +53,8 @@ the same whether you started the tool from the control panel or a terminal.
 | `telegram_bot_token` | The token @BotFather gives you when you create a bot (`/newbot`). Treated like a password in the control panel |
 | `telegram_chat_id` | Your chat id. Send your new bot any message, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and copy the `"chat":{"id": ...}` number |
 
-Both empty (the default) means off. Setting only one is a configuration error. A failed send
-is written to the log and never interrupts an application.
+Both empty (the default) means off. With only one of them set, notifications stay off and the
+log says so once. A failed send is written to the log and never interrupts an application.
 
 To be told when an AI API connection fails, set `showAiErrorAlerts = True` in
 [`config/settings.py`](config-settings.md).

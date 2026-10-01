@@ -116,12 +116,10 @@ SCHEMA = [
             # --- Telegram notifications ---
             _f("Account", "secrets", "telegram_bot_token", "Telegram bot token", "password",
                "Optional. Get a Telegram message with the run summary when a run ends, and right away if the tool stops with an error. "
-               "Create a bot with @BotFather and paste its token here. Leave blank to turn notifications off.",
-               advanced=True),
+               "Create a bot with @BotFather and paste its token here. Leave blank to turn notifications off."),
             _f("Account", "secrets", "telegram_chat_id", "Telegram chat id", "text",
                "Your chat id, so the bot knows whom to message. Send your bot any message, then open "
-               "https://api.telegram.org/bot<TOKEN>/getUpdates and copy the chat id. Leave blank to turn notifications off.",
-               advanced=True),
+               "https://api.telegram.org/bot<TOKEN>/getUpdates and copy the chat id. Leave blank to turn notifications off."),
         ],
     },
     {

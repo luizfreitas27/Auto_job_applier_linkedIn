@@ -54,11 +54,27 @@ def test_a_configured_send_posts_json_to_the_bot_api(sent):
     assert timeout == 10
 
 
-@pytest.mark.parametrize("token, chat", [("", ""), (None, None), (TOKEN, ""), ("", CHAT), ("   ", CHAT)])
-def test_nothing_is_sent_until_both_settings_are_filled(sent, log_records, token, chat):
+@pytest.fixture(autouse=True)
+def forget_half_configured_warning(monkeypatch):
+    monkeypatch.setattr(notify, "_half_configured_warned", False)
+
+
+@pytest.mark.parametrize("token, chat", [("", ""), (None, None), ("  ", "")])
+def test_nothing_is_sent_or_logged_when_both_settings_are_empty(sent, log_records, token, chat):
     assert notify.send_message("x", token, chat) is False
     assert sent["requests"] == []
     assert not [r for r in log_records if r.levelname in ("WARNING", "ERROR")]
+
+
+@pytest.mark.parametrize("token, chat", [(TOKEN, ""), ("", CHAT), ("   ", CHAT)])
+def test_half_configured_sends_nothing_and_warns_once(sent, log_records, token, chat):
+    '''The user meant to turn it on; say so once, but never abort a run over it.'''
+    assert notify.send_message("x", token, chat) is False
+    assert notify.send_message("y", token, chat) is False
+    assert sent["requests"] == []
+    warnings = [r for r in log_records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "BOTH" in warnings[0].getMessage()
+    assert not [r for r in log_records if r.levelname == "ERROR"]
 
 
 def test_the_chat_id_may_be_a_number(sent):
@@ -139,16 +155,16 @@ def test_main_notifies_on_both_fatal_paths_and_at_the_end(bot):
 
 
 # ------------------------------------ config -------------------------------
-def test_both_settings_ship_empty_and_are_validated_as_a_pair(monkeypatch):
+def test_both_settings_ship_empty_and_one_alone_never_blocks_a_run(monkeypatch):
     import config.secrets as secrets
     import modules.validator as validator
     assert secrets.telegram_bot_token == "" and secrets.telegram_chat_id == ""
     monkeypatch.setattr(validator, "telegram_bot_token", TOKEN)
     monkeypatch.setattr(validator, "telegram_chat_id", "")
-    with pytest.raises(ValueError, match="BOTH"):
+    validator.validate_secrets()                       # off, not an error
+    monkeypatch.setattr(validator, "telegram_chat_id", 12345)
+    with pytest.raises(TypeError):                     # but the type is still checked
         validator.validate_secrets()
-    monkeypatch.setattr(validator, "telegram_chat_id", CHAT)
-    validator.validate_secrets()
 
 
 def test_the_token_is_a_password_field_and_the_panel_masks_it(client, tmp_path, monkeypatch):
@@ -158,6 +174,7 @@ def test_the_token_is_a_password_field_and_the_panel_masks_it(client, tmp_path, 
     fields = {f["key"]: f for f in config_schema.iter_fields() if f["config_module"] == "secrets"}
     assert fields["telegram_bot_token"]["type"] == "password"
     assert fields["telegram_chat_id"]["type"] == "text"
+    assert fields["telegram_bot_token"]["section"] == "Account" and not fields["telegram_bot_token"].get("advanced")
 
     cfg_path = str(tmp_path / "user_config.json")
     monkeypatch.setattr(app, "USER_CONFIG_PATH", cfg_path)
