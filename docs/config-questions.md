@@ -101,6 +101,10 @@ form offering "Yes / No" and one offering "Yes, I am / No, I am not". Checkboxes
 the tool never ticks a box on its own. An unticked box it does not recognise is added to the
 file as a pending `checked` answer; once you approve it, the tool ticks that box next time.
 
+Running from a terminal with `pause_at_failed_question` on, the answers you give by hand
+during the "Help Needed" pause are captured too, already approved. Only the fields that were
+empty when the pause began count; stay on the same page of the form until you click Continue.
+
 **Sensitive questions never use this**: work authorization, visa, citizenship, security
 clearance, salary, disability and veteran status are answered only from the settings above.
 

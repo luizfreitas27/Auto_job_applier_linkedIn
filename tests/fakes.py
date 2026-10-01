@@ -97,27 +97,62 @@ class FakeMouse:
     def perform(self): pass
 
 
-def modal_with(question):
-    '''A modal holding exactly one question block.'''
-    return FakeElement(children={".//div[@data-test-form-element]": [question]})
+def modal_with(*questions):
+    '''A modal holding exactly these question blocks.'''
+    return FakeElement(children={".//div[@data-test-form-element]": list(questions)})
+
+
+def text_question(label_text, value="", kind="text"):
+    '''One text input (or textarea) question block. Returns (question, control).'''
+    control = FakeElement(value=value)
+    xpath = ".//textarea" if kind == "textarea" else ".//input[@type='text']"
+    return FakeElement(children={xpath: control, ".//label[@for]": FakeElement(text=label_text)}), control
+
+
+def select_question(bot, monkeypatch, label_text, option_texts, selected="Select an option"):
+    '''One <select> question block; `bot.Select` is patched to return the fake. Returns (question, FakeSelect).'''
+    fake_select = FakeSelect(option_texts, selected=selected)
+    monkeypatch.setattr(bot, "Select", lambda element: fake_select)
+    question = FakeElement(children={
+        ".//select": FakeElement(),
+        "label": FakeElement(children={"span": FakeElement(text=label_text)}),
+    })
+    return question, fake_select
+
+
+def radio_question(label_text, option_labels):
+    '''One radio fieldset question block. Returns (question, options).'''
+    options = [FakeRadio(f"opt{i}", text) for i, text in enumerate(option_labels)]
+    children = {
+        './/span[@data-test-form-builder-radio-button-form-component__title]':
+            FakeElement(children={"visually-hidden": FakeElement(text=label_text)}),
+        'input': options,
+    }
+    for option in options:
+        children[f'.//label[@for="{option.id}"]'] = FakeElement(text=option.label)
+        children[f".//label[normalize-space()='{option.label}']"] = FakeElement(text=option.label)
+    fieldset = FakeElement(children=children)
+    return FakeElement(children={'.//fieldset[@data-test-form-builder-radio-button-form-component="true"]': fieldset}), options
+
+
+def checkbox_block(visible_label, hidden_label=None):
+    '''One checkbox question block. Returns (question, FakeCheckbox).'''
+    box = FakeCheckbox()
+    children = {".//input[@type='checkbox']": box, ".//label[@for]": FakeElement(text=visible_label)}
+    if hidden_label is not None:
+        children[".//span[@class='visually-hidden']"] = FakeElement(text=hidden_label)
+    return FakeElement(children=children), box
 
 
 def text_form(label_text, kind="text"):
     '''A modal with one text input (or textarea) under `label_text`. Returns (modal, control).'''
-    control = FakeElement()
-    xpath = ".//textarea" if kind == "textarea" else ".//input[@type='text']"
-    question = FakeElement(children={xpath: control, ".//label[@for]": FakeElement(text=label_text)})
+    question, control = text_question(label_text, kind=kind)
     return modal_with(question), control
 
 
 def dropdown(bot, monkeypatch, question_text, option_texts):
     '''A modal holding one <select>; returns (modal, FakeSelect).'''
-    fake_select = FakeSelect(option_texts)
-    monkeypatch.setattr(bot, "Select", lambda element: fake_select)
-    question = FakeElement(children={
-        ".//select": FakeElement(),
-        "label": FakeElement(children={"span": FakeElement(text=question_text)}),
-    })
+    question, fake_select = select_question(bot, monkeypatch, question_text, option_texts)
     return modal_with(question), fake_select
 
 
@@ -125,18 +160,7 @@ def radio_group(bot, monkeypatch, question_text, option_labels):
     '''A modal holding one radio fieldset; returns (modal, FakeMouse, options).'''
     mouse = FakeMouse()
     monkeypatch.setattr(bot, "actions", mouse)
-    options = [FakeRadio(f"opt{i}", text) for i, text in enumerate(option_labels)]
-    children = {
-        './/span[@data-test-form-builder-radio-button-form-component__title]':
-            FakeElement(children={"visually-hidden": FakeElement(text=question_text)}),
-        'input': options,
-    }
-    for option in options:
-        children[f'.//label[@for="{option.id}"]'] = FakeElement(text=option.label)
-        children[f".//label[normalize-space()='{option.label}']"] = FakeElement(text=option.label)
-    radio = FakeElement(children=children)
-    question = FakeElement(children={
-        './/fieldset[@data-test-form-builder-radio-button-form-component="true"]': radio})
+    question, options = radio_question(question_text, option_labels)
     return modal_with(question), mouse, options
 
 
@@ -144,8 +168,5 @@ def checkbox_question(bot, monkeypatch, visible_label, hidden_label=None):
     '''A modal holding one checkbox; returns (modal, FakeMouse, checkbox).'''
     mouse = FakeMouse()
     monkeypatch.setattr(bot, "actions", mouse)
-    box = FakeCheckbox()
-    children = {".//input[@type='checkbox']": box, ".//label[@for]": FakeElement(text=visible_label)}
-    if hidden_label is not None:
-        children[".//span[@class='visually-hidden']"] = FakeElement(text=hidden_label)
-    return modal_with(FakeElement(children=children)), mouse, box
+    question, box = checkbox_block(visible_label, hidden_label)
+    return modal_with(question), mouse, box

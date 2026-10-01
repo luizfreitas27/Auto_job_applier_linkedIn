@@ -599,6 +599,140 @@ def option_from_memory_or_ai(label_org: str, kind: str, option_texts: list[str],
     return option_texts.index(answer)
 
 
+# Easy Apply form locators and label readers, shared by `answer_questions` and
+# `read_form_state` so a LinkedIn restyle is fixed in one place and both see the same form.
+form_question_xpath = ".//div[@data-test-form-element]"
+select_xpath = ".//select"
+radio_fieldset_xpath = './/fieldset[@data-test-form-builder-radio-button-form-component="true"]'
+radio_title_xpath = './/span[@data-test-form-builder-radio-button-form-component__title]'
+text_input_xpath = ".//input[@type='text']"
+textarea_xpath = ".//textarea"
+checkbox_xpath = ".//input[@type='checkbox']"
+follow_company_checkbox_id = "follow-company-checkbox"
+unknown_title = "Unknown"
+
+
+def select_title(question: WebElement) -> str:
+    '''The visible title of a dropdown question (label > span), or "Unknown".'''
+    try:
+        return question.find_element(By.TAG_NAME, "label").find_element(By.TAG_NAME, "span").text
+    except Exception:
+        return unknown_title
+
+
+def radio_title(fieldset: WebElement) -> str:
+    '''The visible title of a radio group (its title span, or that span's hidden text), or "Unknown".'''
+    label = try_xp(fieldset, radio_title_xpath, False)
+    try: label = find_by_class(label, "visually-hidden", 2.0)
+    except Exception: pass
+    return label.text if label else unknown_title
+
+
+def text_title(question: WebElement) -> str:
+    '''The visible title of a text input (label[@for], preferring its hidden text), or "Unknown".'''
+    label = try_xp(question, ".//label[@for]", False)
+    try: label = label.find_element(By.CLASS_NAME, 'visually-hidden')
+    except Exception: pass
+    return label.text if label else unknown_title
+
+
+def textarea_title(question: WebElement) -> str:
+    '''The visible title of a textarea (label[@for]), or "Unknown".'''
+    label = try_xp(question, ".//label[@for]", False)
+    return label.text if label else unknown_title
+
+
+def checkbox_key(group_title: str, visible_text: str) -> str:
+    '''
+    The question the answer memory knows a checkbox by: its visible text, prefixed by the
+    group title when the form has one. "" when the box has no text at all, so it is never
+    remembered: an approved "Unknown" would tick every unlabeled box on every form.
+    '''
+    return " ".join(part for part in (group_title, visible_text) if part and part != unknown_title)
+
+
+FormState = dict[tuple[str, str], str | None]
+
+
+def read_form_state(modal: WebElement) -> FormState:
+    '''
+    What every question in the Easy Apply modal currently holds, keyed by (question title,
+    control kind): the selected option text, the typed text, or "checked" for a ticked
+    box; None when the control is empty or still on a placeholder. Read-only, so two
+    snapshots can be compared.
+    '''
+    state: FormState = {}
+    for question in modal.find_elements(By.XPATH, form_question_xpath):
+        select = try_xp(question, select_xpath, False)
+        if select:
+            chosen = Select(select).first_selected_option.text
+            state[(select_title(question), "select")] = None if chosen in option_placeholders else chosen
+            continue
+        radio = try_xp(question, radio_fieldset_xpath, False)
+        if radio:
+            chosen = None
+            for option in radio.find_elements(By.TAG_NAME, 'input'):
+                if option.is_selected():
+                    optionLabel = try_xp(radio, f'.//label[@for="{option.get_attribute("id")}"]', False)
+                    chosen = optionLabel.text if optionLabel else option.get_attribute("value")
+            state[(radio_title(radio), "radio")] = chosen or None
+            continue
+        text = try_xp(question, text_input_xpath, False)
+        if text:
+            state[(text_title(question), "text")] = (text.get_attribute("value") or "").strip() or None
+            continue
+        textArea = try_xp(question, textarea_xpath, False)
+        if textArea:
+            state[(textarea_title(question), "textarea")] = (textArea.get_attribute("value") or "").strip() or None
+            continue
+        checkbox = try_xp(question, checkbox_xpath, False)
+        if checkbox:
+            if checkbox.get_attribute("id") == follow_company_checkbox_id: continue
+            title = try_xp(question, ".//span[@class='visually-hidden']", False)
+            visible = try_xp(question, ".//label[@for]", False)
+            key = checkbox_key(title.text if title else unknown_title, visible.text if visible else unknown_title)
+            if key:
+                state[(key, "checkbox")] = "checked" if checkbox.is_selected() else None
+    return state
+
+
+def capture_manual_answers(before: FormState, after: FormState, job_link: str | None) -> int:
+    '''
+    Remember, as approved **captured answers**, every control the user filled in by hand
+    during a "Help Needed" pause: present and empty in `before`, holding a value in `after`.
+    A control that was not in `before` at all is not the user's answer to THIS pause (the
+    modal moved to another page, with LinkedIn's own prefills), so it is ignored. Sensitive
+    questions and untitled controls are skipped. Returns how many were captured.
+    '''
+    captured = 0
+    for (title, kind), value in after.items():
+        if not value or (title, kind) not in before or before[(title, kind)]:
+            continue
+        if title == unknown_title or is_sensitive_question(title):
+            continue
+        answers_memory.remember(title, kind, value, source="user", job_link=job_link)
+        logger.info('Captured your answer to "%s" (%s): "%s". The bot will reuse it.', title, kind, value)
+        captured += 1
+    return captured
+
+
+def pause_for_help(modal: WebElement, job_id: str, job_link: str | None) -> int:
+    '''
+    The "Help Needed" pause: screenshot, snapshot the form, ask the user to fill in what the
+    bot could not, snapshot again and remember the difference as captured answers. Returns
+    how many were captured; 0 when the form could not be re-read (the page moved on).
+    '''
+    screenshot(driver, job_id, "Needed manual intervention for failed question")
+    formBefore = read_form_state(modal)
+    dialogs.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
+    try:
+        formAfter = read_form_state(modal)
+    except Exception as e:
+        logger.warning("Could not re-read the form after the pause, so nothing was captured. %s", e)
+        return 0
+    return capture_manual_answers(formBefore, formAfter, job_link)
+
+
 def match_answer_to_option(answer: str | None, option_texts: list[str]) -> int | None:
     '''
     Index of the option that honestly carries `answer`, else `None`. One mapper, called by
@@ -781,7 +915,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
      
     # The container class churns (it is `fb-dash-form-element` today, paired with a random
     # class). `data-test-form-element` is the attribute that has survived every restyle.
-    all_questions = modal.find_elements(By.XPATH, ".//div[@data-test-form-element]")
+    all_questions = modal.find_elements(By.XPATH, form_question_xpath)
     # Per-pass, not cumulative: the caller compares consecutive passes to spot a stall.
     unanswered_questions.clear()
     # all_list_questions = modal.find_elements(By.XPATH, ".//div[@data-test-text-entity-list-form-component]")
@@ -794,13 +928,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
         # a textarea and no earlier text input died with UnboundLocalError.
         do_actions = False
         # Check if it's a select Question
-        select = try_xp(Question, ".//select", False)
+        select = try_xp(Question, select_xpath, False)
         if select:
-            label_org = "Unknown"
-            try:
-                label = Question.find_element(By.TAG_NAME, "label")
-                label_org = label.find_element(By.TAG_NAME, "span").text
-            except: pass
+            label_org = select_title(Question)
             # No default answer. `answer = 'Yes'` here meant an unclassified dropdown -
             # "Do you have an active security clearance?" - was answered Yes and submitted,
             # the same defect already removed from the radio branch below.
@@ -867,13 +997,10 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
         
         # Check if it's a radio Question
-        radio = try_xp(Question, './/fieldset[@data-test-form-builder-radio-button-form-component="true"]', False)
+        radio = try_xp(Question, radio_fieldset_xpath, False)
         if radio:
             prev_answer = None
-            label = try_xp(radio, './/span[@data-test-form-builder-radio-button-form-component__title]', False)
-            try: label = find_by_class(label, "visually-hidden", 2.0)
-            except: pass
-            label_org = label.text if label else "Unknown"
+            label_org = radio_title(radio)
             # No default answer. `answer = 'Yes'` here meant an unclassified label - "Do you
             # have an active security clearance?", "Are you a US citizen?" - was submitted as
             # a Yes on a real application.
@@ -927,12 +1054,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
         
         # Check if it's a text question
-        text = try_xp(Question, ".//input[@type='text']", False)
+        text = try_xp(Question, text_input_xpath, False)
         if text: 
-            label = try_xp(Question, ".//label[@for]", False)
-            try: label = label.find_element(By.CLASS_NAME,'visually-hidden')
-            except: pass
-            label_org = label.text if label else "Unknown"
+            label_org = text_title(Question)
             answer = "" # years_of_experience
             label = label_org.lower()
 
@@ -1022,10 +1146,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
 
         # Check if it's a textarea question
-        text_area = try_xp(Question, ".//textarea", False)
+        text_area = try_xp(Question, textarea_xpath, False)
         if text_area:
-            label = try_xp(Question, ".//label[@for]", False)
-            label_org = label.text if label else "Unknown"
+            label_org = textarea_title(Question)
             label = label_org.lower()
             answer = ""
             prev_answer = text_area.get_attribute("value")
@@ -1043,12 +1166,12 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
 
         # Check if it's a checkbox question
-        checkbox = try_xp(Question, ".//input[@type='checkbox']", False)
+        checkbox = try_xp(Question, checkbox_xpath, False)
         if checkbox:
             # The "Follow <company>" box is the one benign checkbox on this form, and
             # `follow_company()` already drives it from `follow_companies`. Ticking it here
             # too would fight that setting, so leave it to its one owner.
-            if checkbox.get_attribute("id") == "follow-company-checkbox": continue
+            if checkbox.get_attribute("id") == follow_company_checkbox_id: continue
             label = try_xp(Question, ".//span[@class='visually-hidden']", False)
             label_org = label.text if label else "Unknown"
             label = label_org.lower()
@@ -1057,11 +1180,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             prev_answer = checkbox.is_selected()
             checked = prev_answer
             if not prev_answer:
-                # The question the memory knows this box by: the visible text, prefixed by
-                # the group title when the form has one. A box with no text at all has no
-                # identity, so it is never remembered: an approved "Unknown" would tick every
-                # unlabeled box on every form.
-                checkboxLabel = " ".join(part for part in (label_org, answer) if part != "Unknown")
+                checkboxLabel = checkbox_key(label_org, answer)
                 # Exact matching only: a near-identical attestation at another employer is a
                 # different legal text, and approving one must not tick the other.
                 remembered, _ = lookup_unless_sensitive(checkboxLabel, "checkbox", approximate=False) if checkboxLabel else (None, False)
@@ -1470,8 +1589,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     next_counter += 1
                                     if next_counter >= 15: 
                                         if pause_at_failed_question:
-                                            screenshot(driver, job_id, "Needed manual intervention for failed question")
-                                            dialogs.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
+                                            pause_for_help(modal, job_id, job_link)
                                             next_counter = 1
                                             continue
                                         if questions_list: print_lg("Stuck for one or some of the following questions...", questions_list)
