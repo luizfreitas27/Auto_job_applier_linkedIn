@@ -112,7 +112,7 @@ except Exception as e:
     if isinstance(e,TimeoutError): msg = "Couldn't download Chrome-driver. Set auto_manage_driver = False in config!"
     logger.error(msg)
     critical_error_log("In Opening Chrome", e)
-    from pyautogui import alert
+    from modules.dialogs import alert
     alert(msg, "Error in opening chrome")
     try: driver.quit()
     except NameError: exit()

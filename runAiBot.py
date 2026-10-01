@@ -21,7 +21,6 @@ import sys
 import csv
 import re
 import time
-import pyautogui
 
 # Raise the CSV field-size cap so very long job descriptions don't trip the writer.
 csv.field_size_limit(1000000)
@@ -46,6 +45,7 @@ from modules.open_chrome import *
 from modules.helpers import *
 from modules.clickers_and_finders import *
 from modules.validator import validate_config
+from modules import dialogs
 
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
@@ -53,28 +53,21 @@ if use_AI:
 from typing import Literal
 
 
-pyautogui.FAILSAFE = False
-
-
 #< Global Variables and logics
 
 if run_in_background == True:
     run_non_stop = False
 
-# pyautogui's alert/confirm are blocking Tk modals. Nobody can click them in a headless
-# run, nor when app.py launches this through Popen with stdout redirected to a log file,
-# so the process hangs forever and reads as "the bot does nothing". Work that out once
-# and degrade every dialog in this file to a log line.
+# Desktop dialogs are blocking Tk modals. Nobody can click them in a headless run, nor
+# when app.py launches this through Popen with stdout redirected to a log file, so the
+# process would hang forever and read as "the bot does nothing". Work that out once and
+# tell modules/dialogs.py to log every dialog instead of showing it.
 interactive_session = not run_in_background and bool(getattr(sys.stdout, "isatty", lambda: False)())
 if not interactive_session:
     pause_at_failed_question = False
     pause_before_submit = False
     pause_after_filters = False
-    def _suppressed_dialog(text: str = "", title: str = "", *args, **kwargs) -> None:
-        print_lg(f'[Dialog suppressed, non-interactive run] {title}: {text}')
-        return None
-    pyautogui.alert = _suppressed_dialog
-    pyautogui.confirm = _suppressed_dialog
+    dialogs.set_enabled(False)
 
 first_name = first_name.strip()
 middle_name = middle_name.strip()
@@ -186,7 +179,7 @@ def login_LN() -> None:
     # Find the username and password fields and fill them with user credentials
     driver.get("https://www.linkedin.com/login")
     if username == "username@example.com" and password == "example_password":
-        pyautogui.alert("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!", "Login Manually","Okay")
+        dialogs.alert("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!", "Login Manually","Okay")
         print_lg("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!")
         manual_login_retry(is_logged_in_LN, 2)
         return
@@ -317,12 +310,12 @@ def apply_filters() -> None:
         buffer(3)   # let the results reload settle before anything reads the list
 
         global pause_after_filters
-        if pause_after_filters and "Turn off Pause after search" == pyautogui.confirm("These are your configured search results and filter. It is safe to change them while this dialog is open, any changes later could result in errors and skipping this search run.", "Please check your results", ["Turn off Pause after search", "Look's good, Continue"]):
+        if pause_after_filters and "Turn off Pause after search" == dialogs.confirm("These are your configured search results and filter. It is safe to change them while this dialog is open, any changes later could result in errors and skipping this search run.", "Please check your results", ["Turn off Pause after search", "Look's good, Continue"]):
             pause_after_filters = False
 
     except Exception as e:
         logger.warning("Setting the preferences failed!")
-        pyautogui.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
+        dialogs.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
         # print_lg(e)
 
 
@@ -1070,7 +1063,7 @@ def failed_job(job_id: str, job_link: str, resume: str, date_listed, error: str,
             file.close()
     except Exception as e:
         logger.error("Failed to update failed jobs list!", exc_info=e)
-        pyautogui.alert("Failed to update the excel of failed jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
+        dialogs.alert("Failed to update the excel of failed jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
 
 
 def screenshot(driver: WebDriver, job_id: str, failedAt: str) -> str:
@@ -1112,7 +1105,7 @@ def submitted_jobs(job_id: str, title: str, company: str, work_location: str, wo
         csv_file.close()
     except Exception as e:
         logger.error("Failed to update submitted jobs list!", exc_info=e)
-        pyautogui.alert("Failed to update the excel of applied jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
+        dialogs.alert("Failed to update the excel of applied jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
 
 
 
@@ -1194,7 +1187,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     if job_index >= len(job_listings): break
                     job = job_listings[job_index]
                     job_index += 1
-                    if keep_screen_awake: pyautogui.press('shiftright')
+                    if keep_screen_awake: dialogs.press('shiftright')
                     if current_count >= switch_number: break
                     print_lg("\n-@-\n")
 
@@ -1339,7 +1332,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     if next_counter >= 15: 
                                         if pause_at_failed_question:
                                             screenshot(driver, job_id, "Needed manual intervention for failed question")
-                                            pyautogui.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
+                                            dialogs.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
                                             next_counter = 1
                                             continue
                                         if questions_list: print_lg("Stuck for one or some of the following questions...", questions_list)
@@ -1383,7 +1376,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     print_lg('"stop_before_submit" is on: reached the Review step with everything filled in. Discarding this application instead of submitting it.')
                                     raise StoppedBeforeSubmit("Reached Review with everything filled in, then discarded because stop_before_submit is on.")
                                 elif errored != "stuck" and cur_pause_before_submit:
-                                    decision = pyautogui.confirm('1. Please verify your information.\n2. If you edited something, please return to this final screen.\n3. DO NOT CLICK "Submit Application".\n\n\n\n\nYou can turn off "Pause before submit" setting in config.py\nTo TEMPORARILY disable pausing, click "Disable Pause"', "Confirm your information",["Disable Pause", "Discard Application", "Submit Application"])
+                                    decision = dialogs.confirm('1. Please verify your information.\n2. If you edited something, please return to this final screen.\n3. DO NOT CLICK "Submit Application".\n\n\n\n\nYou can turn off "Pause before submit" setting in config.py\nTo TEMPORARILY disable pausing, click "Disable Pause"', "Confirm your information",["Disable Pause", "Discard Application", "Submit Application"])
                                     if decision == "Discard Application": discard_reason = "Job application discarded by user!"
                                     else: pause_before_submit = False if "Disable Pause" == decision else True
                                     # try_xp(modal, ".//span[normalize-space(.)='Review']")
@@ -1392,7 +1385,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     if wait_xp_click(modal, submit_button_xpath, 2, scrollTop=True): 
                                         date_applied = datetime.now()
                                         if not wait_span_click(driver, "Done", 2): actions.send_keys(Keys.ESCAPE).perform()
-                                    elif errored != "stuck" and cur_pause_before_submit and "Yes" in pyautogui.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]):
+                                    elif errored != "stuck" and cur_pause_before_submit and "Yes" in dialogs.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]):
                                         date_applied = datetime.now()
                                         wait_span_click(driver, "Done", 2)
                                     else:
@@ -1493,7 +1486,7 @@ def run(total_runs: int) -> int:
 linkedIn_tab = False
 
 def main() -> None:
-    pyautogui.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
+    dialogs.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
     total_runs = 1
     try:
         global linkedIn_tab, tabs_count, useNewResume, aiClient
@@ -1501,7 +1494,7 @@ def main() -> None:
         validate_config()
         
         if not os.path.exists(default_resume_path):
-            pyautogui.alert(text='Your default resume "{}" is missing! Please update it\'s folder path "default_resume_path" in config.py\n\nOR\n\nAdd a resume with exact name and path (check for spelling mistakes including cases).\n\n\nFor now the bot will continue using your previous upload from LinkedIn!'.format(default_resume_path), title="Missing Resume", button="OK")
+            dialogs.alert(text='Your default resume "{}" is missing! Please update it\'s folder path "default_resume_path" in config.py\n\nOR\n\nAdd a resume with exact name and path (check for spelling mistakes including cases).\n\n\nFor now the bot will continue using your previous upload from LinkedIn!'.format(default_resume_path), title="Missing Resume", button="OK")
             useNewResume = False
         
         # Login to LinkedIn
@@ -1536,7 +1529,7 @@ def main() -> None:
         logger.error("The browser window was closed or the session became invalid. Exiting.", exc_info=e)
     except Exception as e:
         critical_error_log("In Applier Main", e)
-        pyautogui.alert(e,alert_title)
+        dialogs.alert(e,alert_title)
     finally:
         summary = "Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\nFailed jobs: {}\nIrrelevant jobs skipped: {}\n".format(total_runs,easy_applied_count,external_jobs_count,easy_applied_count + external_jobs_count,failed_count,skip_count)
         print_lg(summary)
@@ -1569,11 +1562,11 @@ def main() -> None:
             timeSaved += 60
             timeSavedMsg = f"In this run, you saved approx {round(timeSaved/60)} mins ({timeSaved} secs), please consider supporting the project."
         msg = f"{quotes}\n\n\n{timeSavedMsg}\nYou can also get your quote and name shown here, or prioritize your bug reports by supporting the project at:\n\nhttps://github.com/sponsors/GodsScion\n\n\nSummary:\n{summary}\n\n\nBest regards,\nSai Vignesh Golla\nhttps://www.linkedin.com/in/saivigneshgolla/\n\nTop Sponsors:\n{sponsors}"
-        pyautogui.alert(msg, "Exiting..")
+        dialogs.alert(msg, "Exiting..")
         print_lg(msg,"Closing the browser...")
         if tabs_count >= 10:
             msg = "NOTE: IF YOU HAVE MORE THAN 10 TABS OPENED, PLEASE CLOSE OR BOOKMARK THEM!\n\nOr it's highly likely that application will just open browser and not do anything next time!" 
-            pyautogui.alert(msg,"Info")
+            dialogs.alert(msg,"Info")
             print_lg("\n"+msg)
         if use_AI and aiClient:
             try:
