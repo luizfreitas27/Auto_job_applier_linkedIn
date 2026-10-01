@@ -72,7 +72,8 @@ log_level = "INFO"                  # "DEBUG", "INFO", "WARNING" or "ERROR" (cas
 # Set the maximum amount of time allowed to wait between each click in secs
 click_gap = 1                       # Enter max allowed secs to wait approximately. (Only Non Negative Integers Eg: 0,1,2,3,....)
 
-# If you want to see Chrome running then set run_in_background as False (May reduce performance). 
+# If you want to see Chrome running then set run_in_background as False (May reduce performance).
+# WARNING: a hidden (headless) Chrome is easier for LinkedIn to detect, so the risk of being flagged or blocked is higher.
 run_in_background = False           # True or False, Note: True or False are case-sensitive ,   If True, this will make pause_at_failed_question, pause_before_submit and run_in_background as False
 
 # If you want to disable extensions then set disable_extensions as True (Better for performance)
@@ -91,7 +92,7 @@ smooth_scroll = False               # True or False, Note: True or False are cas
 # If enabled (True), the program would keep your screen active and prevent PC from sleeping. Instead you could disable this feature (set it to false) and adjust your PC sleep settings to Never Sleep or a preferred time. 
 keep_screen_awake = True            # True or False, Note: True or False are case-sensitive (Note: Will temporarily deactivate when any application dialog boxes are present (Eg: Pause before submit, Help needed for a question..))
 
-# Automatically download and manage the matching Chrome driver, so you don't have to install ChromeDriver yourself. If False, you must install a matching ChromeDriver manually (see setup step 5).
+# Use SeleniumBase UC Mode: downloads the matching Chrome driver automatically AND makes the browser look like a normal one to LinkedIn. If False, plain Selenium with NO anti-detection (see setup step 5).
 auto_manage_driver = True          # True or False, Note: True or False are case-sensitive
 
 # Do you want to get alerts on errors related to AI API connection?

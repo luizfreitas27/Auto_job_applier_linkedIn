@@ -1,4 +1,6 @@
 # Development / test dependencies. Install with:
 #   pip install -r requirements.txt -r requirements-dev.txt
 # The runtime deps in requirements.txt are also needed to run the tests.
-pytest>=8,<9
+# seleniumbase (requirements.txt) pins pytest exactly (9.x on Python 3.11+, 8.x below); this
+# range accepts whichever it brings instead of fighting it.
+pytest>=8,<10

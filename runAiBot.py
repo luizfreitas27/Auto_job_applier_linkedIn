@@ -21,7 +21,6 @@ import sys
 import csv
 import re
 import time
-import pyautogui
 
 # Raise the CSV field-size cap so very long job descriptions don't trip the writer.
 csv.field_size_limit(1000000)
@@ -40,20 +39,22 @@ from config.personals import *
 from config.questions import *
 from config.search import *
 from config.secrets import use_AI, username, password, ai_provider
+import config.secrets as secrets_config
 from config.settings import *
 
 from modules.open_chrome import *
 from modules.helpers import *
 from modules.clickers_and_finders import *
 from modules.validator import validate_config
+from modules import dialogs
+from modules.answers_memory import AnswerMemory
 
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
+from modules.ai.profile import build_candidate_profile
+from modules import notify
 
 from typing import Literal
-
-
-pyautogui.FAILSAFE = False
 
 
 #< Global Variables and logics
@@ -61,20 +62,16 @@ pyautogui.FAILSAFE = False
 if run_in_background == True:
     run_non_stop = False
 
-# pyautogui's alert/confirm are blocking Tk modals. Nobody can click them in a headless
-# run, nor when app.py launches this through Popen with stdout redirected to a log file,
-# so the process hangs forever and reads as "the bot does nothing". Work that out once
-# and degrade every dialog in this file to a log line.
+# Desktop dialogs are blocking Tk modals. Nobody can click them in a headless run, nor
+# when app.py launches this through Popen with stdout redirected to a log file, so the
+# process would hang forever and read as "the bot does nothing". Work that out once and
+# tell modules/dialogs.py to log every dialog instead of showing it.
 interactive_session = not run_in_background and bool(getattr(sys.stdout, "isatty", lambda: False)())
 if not interactive_session:
     pause_at_failed_question = False
     pause_before_submit = False
     pause_after_filters = False
-    def _suppressed_dialog(text: str = "", title: str = "", *args, **kwargs) -> None:
-        print_lg(f'[Dialog suppressed, non-interactive run] {title}: {text}')
-        return None
-    pyautogui.alert = _suppressed_dialog
-    pyautogui.confirm = _suppressed_dialog
+    dialogs.set_enabled(False)
 
 first_name = first_name.strip()
 middle_name = middle_name.strip()
@@ -124,6 +121,9 @@ notice_period = str(notice_period)
 
 aiClient = None
 about_company_for_ai = None  # filled in later, once we're processing a specific job
+
+# The answer memory (answers_memory.json at the project root). Loaded on first use.
+answers_memory = AnswerMemory()
 
 # Dry run: fill everything in, reach the Review step, then discard instead of submitting.
 # Belongs in config/settings.py; read defensively so an older config keeps working.
@@ -186,7 +186,7 @@ def login_LN() -> None:
     # Find the username and password fields and fill them with user credentials
     driver.get("https://www.linkedin.com/login")
     if username == "username@example.com" and password == "example_password":
-        pyautogui.alert("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!", "Login Manually","Okay")
+        dialogs.alert("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!", "Login Manually","Okay")
         print_lg("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!")
         manual_login_retry(is_logged_in_LN, 2)
         return
@@ -317,12 +317,12 @@ def apply_filters() -> None:
         buffer(3)   # let the results reload settle before anything reads the list
 
         global pause_after_filters
-        if pause_after_filters and "Turn off Pause after search" == pyautogui.confirm("These are your configured search results and filter. It is safe to change them while this dialog is open, any changes later could result in errors and skipping this search run.", "Please check your results", ["Turn off Pause after search", "Look's good, Continue"]):
+        if pause_after_filters and "Turn off Pause after search" == dialogs.confirm("These are your configured search results and filter. It is safe to change them while this dialog is open, any changes later could result in errors and skipping this search run.", "Please check your results", ["Turn off Pause after search", "Look's good, Continue"]):
             pause_after_filters = False
 
     except Exception as e:
         logger.warning("Setting the preferences failed!")
-        pyautogui.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
+        dialogs.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
         # print_lg(e)
 
 
@@ -460,6 +460,17 @@ attestation_terms = ['certify', 'certifies', 'certification', 'attest', 'attesta
                      'accurate', 'accuracy', 'true and complete', 'eligible', 'eligibility',
                      'citizen', 'citizenship', 'clearance', 'i understand', 'i confirm']
 
+# Sensitive questions: answered from configured answers ONLY, never by the AI and never from
+# the answer memory. A wrong guess here misstates the applicant's legal status, pay or
+# protected characteristics on a real application, so these families are gated before
+# either fallback is consulted.
+# No bare 'pay': "Do you pay attention to detail?" is not a salary question.
+salary_terms = ['salary', 'salaries', 'compensation', 'ctc', 'remuneration', 'wage', 'wages', 'pay rate', 'pay range']
+disability_terms = ['disability', 'disabilities', 'disabled', 'handicap', 'handicapped']
+veteran_terms = ['veteran', 'veterans', 'military']
+sensitive_terms = (visa_terms + authorization_terms + citizenship_terms + clearance_terms
+                   + salary_terms + disability_terms + veteran_terms)
+
 # `years_of_experience` is a TOTAL, so it only answers a question that asks for the total.
 total_experience_terms = ['years of experience', 'years experience', 'work experience',
                           'working experience', 'professional experience', 'total experience',
@@ -484,6 +495,244 @@ def work_authorization_answer(label: str) -> str | None:
     if find_bad_word(label, authorization_terms): return legally_authorized
     if find_bad_word(label, citizenship_terms): return us_citizenship
     return None
+
+
+def is_sensitive_question(label: str) -> bool:
+    '''
+    True for a work-authorization, visa, citizenship, clearance, salary, disability or
+    veteran question. Whole-word matching, like every other label test here.
+    '''
+    return find_bad_word(label, sensitive_terms) is not None
+
+
+def lookup_unless_sensitive(label_org: str, kind: str, approximate: bool = True) -> tuple:
+    '''
+    `answers_memory.lookup` guarded by the sensitive-question rule: a sensitive question is
+    never looked up, so it can never be answered from memory. Returns (entry | None, approximate).
+    '''
+    if is_sensitive_question(label_org):
+        return None, False
+    return answers_memory.lookup(label_org, kind, approximate=approximate)
+
+
+def memory_hit_message(label_org: str, answer: str, remembered, approximate: bool) -> str:
+    '''The one log line every memory hit prints, so a grep for "Memory answered" finds them all.'''
+    return f'Memory answered "{label_org}"{" (approximate match)" if approximate else ""}: "{answer}" [{remembered.state}]'
+
+
+def ask_ai(label_org: str, kind: str, job_description: str | None, options: list[str] | None = None) -> str:
+    '''
+    One AI call for a form question, with the candidate profile attached. With `options` the
+    model must name one of them and the answer is that option's own text or "". Returns ""
+    when the AI is off, unavailable, fails or has nothing. Callers decide what to do with it.
+    '''
+    if not (use_AI and aiClient):
+        return ""
+    try:
+        answer = answer_question(aiClient, label_org, options=options,
+                                 question_type="single_select" if options else kind,
+                                 job_description=job_description, user_information_all=build_candidate_profile())
+    except Exception as e:
+        logger.warning("Failed to get AI answer! %s", e)
+        return ""
+    return answer.strip() if isinstance(answer, str) else ""
+
+
+def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | None, job_link: str | None) -> str:
+    '''
+    The fallback for an unrecognised question in a `kind` control: the answer memory first,
+    then the AI, whose answer is remembered as pending for the review queue. Returns "" when
+    neither has anything, or when the question is sensitive (those are never guessed).
+    '''
+    if is_sensitive_question(label_org):
+        return ""
+    remembered, approximate = answers_memory.lookup(label_org, kind)
+    if remembered is not None:
+        answers_memory.record_use(remembered, job_link)
+        print_lg(memory_hit_message(label_org, remembered.answer, remembered, approximate))
+        return remembered.answer
+    answer = ask_ai(label_org, kind, job_description)
+    if not answer:
+        return ""
+    print_lg(f'AI answered "{label_org}": "{answer}"')
+    remembered = answers_memory.remember(label_org, kind, answer, source="ai", job_link=job_link)
+    answers_memory.record_use(remembered, job_link)
+    return answer
+
+
+# Dropdown texts that mean "nothing chosen yet". Never offered to the AI as a choice, and a
+# dropdown sitting on one of them counts as unanswered.
+# ponytail: a guess at LinkedIn's wording, plus "" for an option with no text at all. Extend
+# it when a form shows a new placeholder; the symptom is the AI being offered it as a choice.
+option_placeholders = ("Select an option", "Select", "Please select", "Choose an option", "")
+
+
+def option_from_memory_or_ai(label_org: str, kind: str, option_texts: list[str], job_description: str | None, job_link: str | None) -> int | None:
+    '''
+    Index of the option to pick for a `select` or `radio` question that has no configured
+    answer, else `None`: the answer memory first (its text is matched to THIS form's options,
+    exact then `match_answer_to_option`, so "Yes" works for "Yes/No" and "Yes, I am"), then
+    the AI, which is shown the options and must name one verbatim; its pick is remembered as
+    pending. Sensitive questions get neither. Counts the use when something matches.
+    '''
+    if is_sensitive_question(label_org):
+        return None
+    remembered, approximate = answers_memory.lookup(label_org, kind)
+    if remembered is not None:
+        matched = next((i for i, option in enumerate(option_texts) if option == remembered.answer), None)
+        if matched is None:
+            matched = match_answer_to_option(remembered.answer, option_texts)
+        if matched is not None:
+            answers_memory.record_use(remembered, job_link)
+            print_lg(memory_hit_message(label_org, option_texts[matched], remembered, approximate))
+            return matched
+        print_lg(f'Memory has "{remembered.answer}" for "{label_org}" but no option here matches it.')
+    choices = [option for option in option_texts if option not in option_placeholders]
+    if not choices or not (use_AI and aiClient):
+        return None
+    answer = ask_ai(label_org, kind, job_description, options=choices)
+    if answer not in choices:
+        # The AI layer already reduced a paraphrase to "", so this is the "nothing usable" line.
+        print_lg(f'AI did not name one of the options for "{label_org}". Leaving it unanswered.')
+        return None
+    print_lg(f'AI answered "{label_org}": "{answer}"')
+    remembered = answers_memory.remember(label_org, kind, answer, source="ai", job_link=job_link)
+    answers_memory.record_use(remembered, job_link)
+    return option_texts.index(answer)
+
+
+# Easy Apply form locators and label readers, shared by `answer_questions` and
+# `read_form_state` so a LinkedIn restyle is fixed in one place and both see the same form.
+form_question_xpath = ".//div[@data-test-form-element]"
+select_xpath = ".//select"
+radio_fieldset_xpath = './/fieldset[@data-test-form-builder-radio-button-form-component="true"]'
+radio_title_xpath = './/span[@data-test-form-builder-radio-button-form-component__title]'
+text_input_xpath = ".//input[@type='text']"
+textarea_xpath = ".//textarea"
+checkbox_xpath = ".//input[@type='checkbox']"
+follow_company_checkbox_id = "follow-company-checkbox"
+unknown_title = "Unknown"
+
+
+def select_title(question: WebElement) -> str:
+    '''The visible title of a dropdown question (label > span), or "Unknown".'''
+    try:
+        return question.find_element(By.TAG_NAME, "label").find_element(By.TAG_NAME, "span").text
+    except Exception:
+        return unknown_title
+
+
+def radio_title(fieldset: WebElement) -> str:
+    '''The visible title of a radio group (its title span, or that span's hidden text), or "Unknown".'''
+    label = try_xp(fieldset, radio_title_xpath, False)
+    try: label = find_by_class(label, "visually-hidden", 2.0)
+    except Exception: pass
+    return label.text if label else unknown_title
+
+
+def text_title(question: WebElement) -> str:
+    '''The visible title of a text input (label[@for], preferring its hidden text), or "Unknown".'''
+    label = try_xp(question, ".//label[@for]", False)
+    try: label = label.find_element(By.CLASS_NAME, 'visually-hidden')
+    except Exception: pass
+    return label.text if label else unknown_title
+
+
+def textarea_title(question: WebElement) -> str:
+    '''The visible title of a textarea (label[@for]), or "Unknown".'''
+    label = try_xp(question, ".//label[@for]", False)
+    return label.text if label else unknown_title
+
+
+def checkbox_key(group_title: str, visible_text: str) -> str:
+    '''
+    The question the answer memory knows a checkbox by: its visible text, prefixed by the
+    group title when the form has one. "" when the box has no text at all, so it is never
+    remembered: an approved "Unknown" would tick every unlabeled box on every form.
+    '''
+    return " ".join(part for part in (group_title, visible_text) if part and part != unknown_title)
+
+
+FormState = dict[tuple[str, str], str | None]
+
+
+def read_form_state(modal: WebElement) -> FormState:
+    '''
+    What every question in the Easy Apply modal currently holds, keyed by (question title,
+    control kind): the selected option text, the typed text, or "checked" for a ticked
+    box; None when the control is empty or still on a placeholder. Read-only, so two
+    snapshots can be compared.
+    '''
+    state: FormState = {}
+    for question in modal.find_elements(By.XPATH, form_question_xpath):
+        select = try_xp(question, select_xpath, False)
+        if select:
+            chosen = Select(select).first_selected_option.text
+            state[(select_title(question), "select")] = None if chosen in option_placeholders else chosen
+            continue
+        radio = try_xp(question, radio_fieldset_xpath, False)
+        if radio:
+            chosen = None
+            for option in radio.find_elements(By.TAG_NAME, 'input'):
+                if option.is_selected():
+                    optionLabel = try_xp(radio, f'.//label[@for="{option.get_attribute("id")}"]', False)
+                    chosen = optionLabel.text if optionLabel else option.get_attribute("value")
+            state[(radio_title(radio), "radio")] = chosen or None
+            continue
+        text = try_xp(question, text_input_xpath, False)
+        if text:
+            state[(text_title(question), "text")] = (text.get_attribute("value") or "").strip() or None
+            continue
+        textArea = try_xp(question, textarea_xpath, False)
+        if textArea:
+            state[(textarea_title(question), "textarea")] = (textArea.get_attribute("value") or "").strip() or None
+            continue
+        checkbox = try_xp(question, checkbox_xpath, False)
+        if checkbox:
+            if checkbox.get_attribute("id") == follow_company_checkbox_id: continue
+            title = try_xp(question, ".//span[@class='visually-hidden']", False)
+            visible = try_xp(question, ".//label[@for]", False)
+            key = checkbox_key(title.text if title else unknown_title, visible.text if visible else unknown_title)
+            if key:
+                state[(key, "checkbox")] = "checked" if checkbox.is_selected() else None
+    return state
+
+
+def capture_manual_answers(before: FormState, after: FormState, job_link: str | None) -> int:
+    '''
+    Remember, as approved **captured answers**, every control the user filled in by hand
+    during a "Help Needed" pause: present and empty in `before`, holding a value in `after`.
+    A control that was not in `before` at all is not the user's answer to THIS pause (the
+    modal moved to another page, with LinkedIn's own prefills), so it is ignored. Sensitive
+    questions and untitled controls are skipped. Returns how many were captured.
+    '''
+    captured = 0
+    for (title, kind), value in after.items():
+        if not value or (title, kind) not in before or before[(title, kind)]:
+            continue
+        if title == unknown_title or is_sensitive_question(title):
+            continue
+        answers_memory.remember(title, kind, value, source="user", job_link=job_link)
+        logger.info('Captured your answer to "%s" (%s): "%s". The bot will reuse it.', title, kind, value)
+        captured += 1
+    return captured
+
+
+def pause_for_help(modal: WebElement, job_id: str, job_link: str | None) -> int:
+    '''
+    The "Help Needed" pause: screenshot, snapshot the form, ask the user to fill in what the
+    bot could not, snapshot again and remember the difference as captured answers. Returns
+    how many were captured; 0 when the form could not be re-read (the page moved on).
+    '''
+    screenshot(driver, job_id, "Needed manual intervention for failed question")
+    formBefore = read_form_state(modal)
+    dialogs.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
+    try:
+        formAfter = read_form_state(modal)
+    except Exception as e:
+        logger.warning("Could not re-read the form after the pause, so nothing was captured. %s", e)
+        return 0
+    return capture_manual_answers(formBefore, formAfter, job_link)
 
 
 def match_answer_to_option(answer: str | None, option_texts: list[str]) -> int | None:
@@ -663,12 +912,12 @@ def answer_common_questions(label: str, answer: str | None) -> str | None:
 
 
 # Function to answer the questions for Easy Apply
-def answer_questions(modal: WebElement, questions_list: set, work_location: str, job_description: str | None = None ) -> set:
+def answer_questions(modal: WebElement, questions_list: set, work_location: str, job_description: str | None = None, job_link: str | None = None) -> set:
     # Get all questions from the page
      
     # The container class churns (it is `fb-dash-form-element` today, paired with a random
     # class). `data-test-form-element` is the attribute that has survived every restyle.
-    all_questions = modal.find_elements(By.XPATH, ".//div[@data-test-form-element]")
+    all_questions = modal.find_elements(By.XPATH, form_question_xpath)
     # Per-pass, not cumulative: the caller compares consecutive passes to spot a stall.
     unanswered_questions.clear()
     # all_list_questions = modal.find_elements(By.XPATH, ".//div[@data-test-text-entity-list-form-component]")
@@ -681,13 +930,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
         # a textarea and no earlier text input died with UnboundLocalError.
         do_actions = False
         # Check if it's a select Question
-        select = try_xp(Question, ".//select", False)
+        select = try_xp(Question, select_xpath, False)
         if select:
-            label_org = "Unknown"
-            try:
-                label = Question.find_element(By.TAG_NAME, "label")
-                label_org = label.find_element(By.TAG_NAME, "span").text
-            except: pass
+            label_org = select_title(Question)
             # No default answer. `answer = 'Yes'` here meant an unclassified dropdown -
             # "Do you have an active security clearance?" - was answered Yes and submitted,
             # the same defect already removed from the radio branch below.
@@ -701,7 +946,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 optionsText = [option.text for option in select.options]
                 options = "".join([f' "{option}",' for option in optionsText])
             prev_answer = selected_option
-            if overwrite_previous_answers or selected_option == "Select an option":
+            if overwrite_previous_answers or selected_option in option_placeholders:
                 # Pick a sensible answer for the dropdown from the question label.
                 # Whole words only, and work authorization first: "Are you currently legally
                 # authorized to work in the United States?" contains "state" and used to be
@@ -734,6 +979,10 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 except NoSuchElementException:
                     # The exact text isn't an option; map our answer onto the nearest option.
                     matched = match_answer_to_option(answer, optionsText)
+                    if matched is None and not answer:
+                        # No configured answer (unrecognised, or a setting left blank): a
+                        # remembered answer may fit this form's options.
+                        matched = option_from_memory_or_ai(label_org, "select", optionsText, job_description, job_link)
                     if matched is not None:
                         select.select_by_visible_text(optionsText[matched])
                         answer = optionsText[matched]
@@ -750,18 +999,18 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
         
         # Check if it's a radio Question
-        radio = try_xp(Question, './/fieldset[@data-test-form-builder-radio-button-form-component="true"]', False)
+        radio = try_xp(Question, radio_fieldset_xpath, False)
         if radio:
             prev_answer = None
-            label = try_xp(radio, './/span[@data-test-form-builder-radio-button-form-component__title]', False)
-            try: label = find_by_class(label, "visually-hidden", 2.0)
-            except: pass
-            label_org = label.text if label else "Unknown"
+            label_org = radio_title(radio)
             # No default answer. `answer = 'Yes'` here meant an unclassified label - "Do you
             # have an active security clearance?", "Are you a US citizen?" - was submitted as
             # a Yes on a real application.
             answer = None
             label = label_org.lower()
+            # ponytail: `label_org` is turned into a log string ("title [ "opt"<urn>, ...") a few
+            # lines down and every later use expects that; keep the bare title for the memory.
+            questionTitle = label_org
 
             label_org += ' [ '
             options = radio.find_elements(By.TAG_NAME, 'input')
@@ -788,6 +1037,8 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     actions.move_to_element(foundOption).click().perform()
                 else:
                     matched = match_answer_to_option(answer, option_texts)
+                    if matched is None and not answer:
+                        matched = option_from_memory_or_ai(questionTitle, "radio", option_texts, job_description, job_link)
                     if matched is None:
                         # Never guess: `options[0]` clicked whatever LinkedIn rendered first
                         # and submitted it as a real answer - the radio twin of the
@@ -805,16 +1056,16 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
         
         # Check if it's a text question
-        text = try_xp(Question, ".//input[@type='text']", False)
+        text = try_xp(Question, text_input_xpath, False)
         if text: 
-            label = try_xp(Question, ".//label[@for]", False)
-            try: label = label.find_element(By.CLASS_NAME,'visually-hidden')
-            except: pass
-            label_org = label.text if label else "Unknown"
+            label_org = text_title(Question)
             answer = "" # years_of_experience
             label = label_org.lower()
 
             prev_answer = text.get_attribute("value")
+            # Some questions must never be guessed by memory or the AI even when nothing is
+            # configured; the branch that knows that turns this off.
+            fallbackAllowed = True
             if not prev_answer or overwrite_previous_answers:
                 auth_answer = work_authorization_answer(label)
                 if auth_answer is not None: answer = auth_answer
@@ -831,6 +1082,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     # falls through below and types the user's CITY into the email box. There is no
                     # email value in config/personals.py, so leave it for LinkedIn's own prefill
                     # rather than guessing. ponytail: add `email` to personals.py to answer it.
+                    # And never let the AI invent one: a made-up email would be remembered and
+                    # replayed on every later application.
+                    fallbackAllowed = False
                     print_lg(f'No configured answer for the email question "{label_org}". Leaving LinkedIn\'s own value in place.')
                 elif label_has(label, 'city', 'location', 'address'):
                     answer = current_city if current_city else work_location
@@ -873,25 +1127,17 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 elif label_has(label, 'zip', 'zipcode', 'postal', 'postcode', 'code'): answer = zipcode
                 elif label_has(label, 'country'): answer = country
                 else: answer = answer_common_questions(label,answer)
+                if answer == "" and fallbackAllowed:
+                    answer = answer_from_memory_or_ai(label_org, "text", job_description, job_link)
                 if answer == "":
-                    ai_answer = ""
-                    if use_AI and aiClient:
-                        try:
-                            ai_answer = answer_question(aiClient, label_org, question_type="text", job_description=job_description, user_information_all=user_information_all)
-                        except Exception as e:
-                            logger.warning("Failed to get AI answer! %s", e)
-                    if ai_answer and isinstance(ai_answer, str) and ai_answer.strip():
-                        answer = ai_answer.strip()
-                        print_lg(f'AI answered "{label_org}": "{answer}"')
-                    else:
-                        # Leave it empty. It used to fall back to `years_of_experience`, so
-                        # "How many years of Kubernetes?", "What is your expected salary?"
-                        # and "How many people did you manage?" were all submitted as the
-                        # user's total years of experience - wrong data on a real
-                        # application. Report it and let the stall guard skip the job.
-                        print_lg(f'No answer for the text question "{label_org}". Leaving it empty - add it to config/questions.py.')
-                        randomly_answered_questions.add((label_org, "text"))
-                        unanswered_questions.add(label_org)
+                    # Leave it empty. It used to fall back to `years_of_experience`, so
+                    # "How many years of Kubernetes?", "What is your expected salary?"
+                    # and "How many people did you manage?" were all submitted as the
+                    # user's total years of experience - wrong data on a real
+                    # application. Report it and let the stall guard skip the job.
+                    print_lg(f'No answer for the text question "{label_org}". Leaving it empty - add it to config/questions.py.')
+                    randomly_answered_questions.add((label_org, "text"))
+                    unanswered_questions.add(label_org)
                 text.clear()
                 human_type(text, answer)
                 if do_actions:
@@ -902,10 +1148,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
 
         # Check if it's a textarea question
-        text_area = try_xp(Question, ".//textarea", False)
+        text_area = try_xp(Question, textarea_xpath, False)
         if text_area:
-            label = try_xp(Question, ".//label[@for]", False)
-            label_org = label.text if label else "Unknown"
+            label_org = textarea_title(Question)
             label = label_org.lower()
             answer = ""
             prev_answer = text_area.get_attribute("value")
@@ -913,16 +1158,8 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 if label_has(label, 'summary'): answer = linkedin_summary
                 elif label_has(label, 'cover'): answer = cover_letter
                 if answer == "":
-                    ai_answer = ""
-                    if use_AI and aiClient:
-                        try:
-                            ai_answer = answer_question(aiClient, label_org, question_type="textarea", job_description=job_description, user_information_all=user_information_all)
-                        except Exception as e:
-                            logger.warning("Failed to get AI answer! %s", e)
-                    if ai_answer and isinstance(ai_answer, str) and ai_answer.strip():
-                        answer = ai_answer.strip()
-                        print_lg(f'AI answered "{label_org}": "{answer}"')
-                    else:
+                    answer = answer_from_memory_or_ai(label_org, "textarea", job_description, job_link)
+                    if answer == "":
                         randomly_answered_questions.add((label_org, "textarea"))
                         unanswered_questions.add(label_org)
             text_area.clear()
@@ -931,12 +1168,12 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             continue
 
         # Check if it's a checkbox question
-        checkbox = try_xp(Question, ".//input[@type='checkbox']", False)
+        checkbox = try_xp(Question, checkbox_xpath, False)
         if checkbox:
             # The "Follow <company>" box is the one benign checkbox on this form, and
             # `follow_company()` already drives it from `follow_companies`. Ticking it here
             # too would fight that setting, so leave it to its one owner.
-            if checkbox.get_attribute("id") == "follow-company-checkbox": continue
+            if checkbox.get_attribute("id") == follow_company_checkbox_id: continue
             label = try_xp(Question, ".//span[@class='visually-hidden']", False)
             label_org = label.text if label else "Unknown"
             label = label_org.lower()
@@ -945,17 +1182,33 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
             prev_answer = checkbox.is_selected()
             checked = prev_answer
             if not prev_answer:
-                # Never tick a box just because it is there. Every unticked checkbox used to
-                # be clicked, which silently agreed to whatever it said: "I certify I am a
-                # U.S. citizen", "I consent to a background check", "I agree to the terms".
-                # An attestation has no honest default and the rest cannot be classified, so
-                # both are left alone and reported, exactly like the radio branch.
-                term = find_bad_word(f'{label_org} {answer}', attestation_terms)
-                blocked = f'{label_org} ([ ] {answer})'
-                print_lg('Not ticking "{}": it {}. Tick it yourself, it is not something to guess.'.format(
-                    blocked, f'is an attestation or consent ("{term}")' if term else 'cannot be classified'))
-                randomly_answered_questions.add((blocked, "checkbox"))
-                unanswered_questions.add(blocked)
+                checkboxLabel = checkbox_key(label_org, answer)
+                # Exact matching only: a near-identical attestation at another employer is a
+                # different legal text, and approving one must not tick the other.
+                remembered, _ = lookup_unless_sensitive(checkboxLabel, "checkbox", approximate=False) if checkboxLabel else (None, False)
+                if remembered is not None and remembered.state == "approved" and remembered.answer == "checked":
+                    # The user approved ticking this box in the review queue. Only an approved
+                    # remembered answer may tick: never a pending one, never the AI.
+                    actions.move_to_element(checkbox).click().perform()
+                    checked = True
+                    answers_memory.record_use(remembered, job_link)
+                    print_lg(f'Memory ticked "{checkboxLabel}" (approved by you).')
+                else:
+                    # Never tick a box just because it is there. Every unticked checkbox used to
+                    # be clicked, which silently agreed to whatever it said: "I certify I am a
+                    # U.S. citizen", "I consent to a background check", "I agree to the terms".
+                    # An attestation has no honest default and the rest cannot be classified, so
+                    # both are left alone and reported, exactly like the radio branch.
+                    term = find_bad_word(f'{label_org} {answer}', attestation_terms)
+                    blocked = f'{label_org} ([ ] {answer})'
+                    print_lg('Not ticking "{}": it {}. Tick it yourself, it is not something to guess.'.format(
+                        blocked, f'is an attestation or consent ("{term}")' if term else 'cannot be classified'))
+                    randomly_answered_questions.add((blocked, "checkbox"))
+                    unanswered_questions.add(blocked)
+                    # Offer it for review: approving "checked" lets the bot tick it next time.
+                    # A sensitive box (e.g. "I certify I am a U.S. citizen") is never offered.
+                    if remembered is None and checkboxLabel and not is_sensitive_question(checkboxLabel):
+                        answers_memory.remember(checkboxLabel, "checkbox", "checked", source="form", job_link=job_link)
             questions_list.add((f'{label} ([X] {answer})', checked, "checkbox", prev_answer))
             continue
 
@@ -1070,7 +1323,7 @@ def failed_job(job_id: str, job_link: str, resume: str, date_listed, error: str,
             file.close()
     except Exception as e:
         logger.error("Failed to update failed jobs list!", exc_info=e)
-        pyautogui.alert("Failed to update the excel of failed jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
+        dialogs.alert("Failed to update the excel of failed jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
 
 
 def screenshot(driver: WebDriver, job_id: str, failedAt: str) -> str:
@@ -1112,7 +1365,7 @@ def submitted_jobs(job_id: str, title: str, company: str, work_location: str, wo
         csv_file.close()
     except Exception as e:
         logger.error("Failed to update submitted jobs list!", exc_info=e)
-        pyautogui.alert("Failed to update the excel of applied jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
+        dialogs.alert("Failed to update the excel of applied jobs!\nProbably because of 1 of the following reasons:\n1. The file is currently open or in use by another program\n2. Permission denied to write to the file\n3. Failed to find the file", "Failed Logging")
 
 
 
@@ -1194,7 +1447,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     if job_index >= len(job_listings): break
                     job = job_listings[job_index]
                     job_index += 1
-                    if keep_screen_awake: pyautogui.press('shiftright')
+                    if keep_screen_awake: dialogs.press('shiftright')
                     if current_count >= switch_number: break
                     print_lg("\n-@-\n")
 
@@ -1338,15 +1591,14 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     next_counter += 1
                                     if next_counter >= 15: 
                                         if pause_at_failed_question:
-                                            screenshot(driver, job_id, "Needed manual intervention for failed question")
-                                            pyautogui.alert("Couldn't answer one or more questions.\nPlease click \"Continue\" once done.\nDO NOT CLICK Back, Next or Review button in LinkedIn.\n\n\n\n\nYou can turn off \"Pause at failed question\" setting in config.py", "Help Needed", "Continue")
+                                            pause_for_help(modal, job_id, job_link)
                                             next_counter = 1
                                             continue
                                         if questions_list: print_lg("Stuck for one or some of the following questions...", questions_list)
                                         screenshot_name = screenshot(driver, job_id, "Failed at questions")
                                         errored = "stuck"
                                         raise Exception("Seems like stuck in a continuous loop of next, probably because of new questions.")
-                                    questions_list = answer_questions(modal, questions_list, work_location, job_description=description)
+                                    questions_list = answer_questions(modal, questions_list, work_location, job_description=description, job_link=job_link)
                                     # `pause_at_failed_question` users want the manual prompt the
                                     # counter above gives them, so only bail out when it is off.
                                     if not pause_at_failed_question and questions_are_stalled(blocked_questions):
@@ -1383,7 +1635,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     print_lg('"stop_before_submit" is on: reached the Review step with everything filled in. Discarding this application instead of submitting it.')
                                     raise StoppedBeforeSubmit("Reached Review with everything filled in, then discarded because stop_before_submit is on.")
                                 elif errored != "stuck" and cur_pause_before_submit:
-                                    decision = pyautogui.confirm('1. Please verify your information.\n2. If you edited something, please return to this final screen.\n3. DO NOT CLICK "Submit Application".\n\n\n\n\nYou can turn off "Pause before submit" setting in config.py\nTo TEMPORARILY disable pausing, click "Disable Pause"', "Confirm your information",["Disable Pause", "Discard Application", "Submit Application"])
+                                    decision = dialogs.confirm('1. Please verify your information.\n2. If you edited something, please return to this final screen.\n3. DO NOT CLICK "Submit Application".\n\n\n\n\nYou can turn off "Pause before submit" setting in config.py\nTo TEMPORARILY disable pausing, click "Disable Pause"', "Confirm your information",["Disable Pause", "Discard Application", "Submit Application"])
                                     if decision == "Discard Application": discard_reason = "Job application discarded by user!"
                                     else: pause_before_submit = False if "Disable Pause" == decision else True
                                     # try_xp(modal, ".//span[normalize-space(.)='Review']")
@@ -1392,7 +1644,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     if wait_xp_click(modal, submit_button_xpath, 2, scrollTop=True): 
                                         date_applied = datetime.now()
                                         if not wait_span_click(driver, "Done", 2): actions.send_keys(Keys.ESCAPE).perform()
-                                    elif errored != "stuck" and cur_pause_before_submit and "Yes" in pyautogui.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]):
+                                    elif errored != "stuck" and cur_pause_before_submit and "Yes" in (dialogs.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]) or ""):
                                         date_applied = datetime.now()
                                         wait_span_click(driver, "Done", 2)
                                     else:
@@ -1492,8 +1744,42 @@ def run(total_runs: int) -> int:
 
 linkedIn_tab = False
 
+
+def run_summary(total_runs: int) -> str:
+    '''The **run summary**: the counts the bot reports when a run ends, including answers awaiting review.'''
+    try:
+        pendingAnswers = answers_memory.pending_count()
+    except Exception as e:
+        logger.warning("Could not count pending answers for the summary. %s", e)
+        pendingAnswers = 0
+    return ("Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\n"
+            "Failed jobs: {}\nIrrelevant jobs skipped: {}\nPending answers to review in the control panel: {}\n").format(
+                total_runs, easy_applied_count, external_jobs_count, easy_applied_count + external_jobs_count,
+                failed_count, skip_count, pendingAnswers)
+
+
+def telegram_settings() -> tuple[str, str]:
+    '''
+    (token, chat id) as configured right now. Read from the module rather than the star-imported
+    globals so a value the control panel saved (applied by config/_overrides at import) is the
+    one used, and so tests can patch the module.
+    '''
+    return secrets_config.telegram_bot_token, secrets_config.telegram_chat_id
+
+
+def notify_run_end(summary: str) -> bool:
+    '''Send the run summary to Telegram, if notifications are configured. Never raises.'''
+    return notify.send_message(f"Auto Job Applier: run finished.\n\n{summary}", *telegram_settings())
+
+
+def notify_error(reason: str, error: BaseException | None = None) -> bool:
+    '''Tell the user on Telegram that the bot stopped because of an error. Never raises.'''
+    detail = f"\n\n{type(error).__name__}: {error}" if error is not None else ""
+    return notify.send_message(f"Auto Job Applier stopped: {reason}{detail}", *telegram_settings())
+
+
 def main() -> None:
-    pyautogui.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
+    dialogs.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
     total_runs = 1
     try:
         global linkedIn_tab, tabs_count, useNewResume, aiClient
@@ -1501,7 +1787,7 @@ def main() -> None:
         validate_config()
         
         if not os.path.exists(default_resume_path):
-            pyautogui.alert(text='Your default resume "{}" is missing! Please update it\'s folder path "default_resume_path" in config.py\n\nOR\n\nAdd a resume with exact name and path (check for spelling mistakes including cases).\n\n\nFor now the bot will continue using your previous upload from LinkedIn!'.format(default_resume_path), title="Missing Resume", button="OK")
+            dialogs.alert(text='Your default resume "{}" is missing! Please update it\'s folder path "default_resume_path" in config.py\n\nOR\n\nAdd a resume with exact name and path (check for spelling mistakes including cases).\n\n\nFor now the bot will continue using your previous upload from LinkedIn!'.format(default_resume_path), title="Missing Resume", button="OK")
             useNewResume = False
         
         # Login to LinkedIn
@@ -1534,19 +1820,23 @@ def main() -> None:
 
     except (NoSuchWindowException, WebDriverException) as e:
         logger.error("The browser window was closed or the session became invalid. Exiting.", exc_info=e)
+        notify_error("the browser window was closed or the session became invalid", e)
     except Exception as e:
         critical_error_log("In Applier Main", e)
-        pyautogui.alert(e,alert_title)
+        notify_error("an unexpected error", e)
+        dialogs.alert(e,alert_title)
     finally:
-        summary = "Total runs: {}\nJobs Easy Applied: {}\nExternal job links collected: {}\nTotal applied or collected: {}\nFailed jobs: {}\nIrrelevant jobs skipped: {}\n".format(total_runs,easy_applied_count,external_jobs_count,easy_applied_count + external_jobs_count,failed_count,skip_count)
+        summary = run_summary(total_runs)
         print_lg(summary)
+        notify_run_end(summary)
         print_lg("\n\nTotal runs:                     {}".format(total_runs))
         print_lg("Jobs Easy Applied:              {}".format(easy_applied_count))
         print_lg("External job links collected:   {}".format(external_jobs_count))
         print_lg("                              ----------")
         print_lg("Total applied or collected:     {}".format(easy_applied_count + external_jobs_count))
         print_lg("\nFailed jobs:                    {}".format(failed_count))
-        print_lg("Irrelevant jobs skipped:        {}\n".format(skip_count))
+        print_lg("Irrelevant jobs skipped:        {}".format(skip_count))
+        print_lg("Pending answers to review:      {}\n".format(answers_memory.pending_count()))
         if randomly_answered_questions: print_lg("\n\nQuestions randomly answered:\n  {}  \n\n".format(";\n".join(str(question) for question in randomly_answered_questions)))
         quotes = choice([
             "Never quit. You're one step closer than before. - Sai Vignesh Golla", 
@@ -1569,11 +1859,11 @@ def main() -> None:
             timeSaved += 60
             timeSavedMsg = f"In this run, you saved approx {round(timeSaved/60)} mins ({timeSaved} secs), please consider supporting the project."
         msg = f"{quotes}\n\n\n{timeSavedMsg}\nYou can also get your quote and name shown here, or prioritize your bug reports by supporting the project at:\n\nhttps://github.com/sponsors/GodsScion\n\n\nSummary:\n{summary}\n\n\nBest regards,\nSai Vignesh Golla\nhttps://www.linkedin.com/in/saivigneshgolla/\n\nTop Sponsors:\n{sponsors}"
-        pyautogui.alert(msg, "Exiting..")
+        dialogs.alert(msg, "Exiting..")
         print_lg(msg,"Closing the browser...")
         if tabs_count >= 10:
             msg = "NOTE: IF YOU HAVE MORE THAN 10 TABS OPENED, PLEASE CLOSE OR BOOKMARK THEM!\n\nOr it's highly likely that application will just open browser and not do anything next time!" 
-            pyautogui.alert(msg,"Info")
+            dialogs.alert(msg,"Info")
             print_lg("\n"+msg)
         if use_AI and aiClient:
             try:

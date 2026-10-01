@@ -194,9 +194,17 @@ def test_the_file_handler_rotates(log_file):
     assert handlers[0].backupCount > 0
 
 
+def our_handlers():
+    '''
+    The tool's own handlers. pytest 9 temporarily attaches its capture handlers to loggers
+    that do not propagate (ours), so counting `logger.handlers` raw would count pytest too.
+    '''
+    return [h for h in logger.handlers if not type(h).__module__.startswith("_pytest")]
+
+
 def test_setup_logging_replaces_handlers_instead_of_stacking_them(log_file, capsys):
-    before = len(logger.handlers)
+    before = len(our_handlers())
     setup_logging(str(log_file))
-    assert len(logger.handlers) == before
+    assert len(our_handlers()) == before
     print_lg("once")
     assert capsys.readouterr().out == "once\n"

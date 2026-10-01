@@ -19,7 +19,7 @@ What the tool should say when an application asks you something. Open
 | `linkedin_headline` | Your headline, e.g. `"Full Stack Developer with Masters in Computer Science and 4+ years of experience"`, or `""` |
 | `linkedin_summary` | Your summary. Use `\n` for line breaks in a `"..."` string, or use `"""..."""` and write it across lines |
 | `cover_letter` | Your cover letter. Same formatting rules as the summary |
-| `user_information_all` | Free-form facts about you that the **AI** may use when drafting answers — name, years of experience, key skills, location, work authorization, anything an answer might need. Only used when AI is on (see [secrets](config-secrets.md)) |
+| `user_information_all` | Free-form **addition** to the candidate profile the **AI** is given. The tool already builds that profile from your settings (name, location, years of experience, desired salary, notice period, recent employer, headline, summary, work authorization, visa need); put here anything those miss, such as key skills. Phone, email, street address, citizenship status and current salary are never sent. Only used when AI is on (see [secrets](config-secrets.md)) |
 | `recent_employer` | Name of your most recent employer, e.g. `"Not Applicable"` |
 | `confidence_level` | `"1"` to `"10"` in quotes. Used for "on a scale of 1-10, how much experience do you have..." questions |
 
@@ -78,6 +78,40 @@ The tool reshapes these to fit the question it is asked:
 
 For a dry run that fills everything in and stops without submitting, see
 [`stop_before_submit`](config-settings.md#dry-runs-stop_before_submit).
+
+## Remembered answers: `answers_memory.json`
+
+When a question matches none of the settings above, the tool asks the AI (if it is on) and
+**remembers** the answer in `answers_memory.json` at the project root. The next time the same
+question appears, at any company, the remembered answer is used and the AI is not asked
+again. Small rewordings count as the same question; the log says when a match was approximate.
+
+Each remembered answer records the question, the control kind, the answer, who gave it
+(`ai` or `user`), its review state (`pending` until you confirm it, then `approved`), how many
+times it was used and the last job it was used on. Remembered answers are used immediately,
+including pending ones; reviewing them improves future applications, it does not block the
+current one.
+
+When AI is on, it also answers dropdowns and radio buttons it does not recognise: it is shown
+the real options and must name one of them exactly, otherwise the control is left alone.
+
+Dropdowns and radio buttons work the same way: the remembered answer is text, and the tool
+picks whichever option on the current form means the same thing, so a remembered "Yes" fits a
+form offering "Yes / No" and one offering "Yes, I am / No, I am not". Checkboxes are stricter:
+the tool never ticks a box on its own. An unticked box it does not recognise is added to the
+file as a pending `checked` answer; once you approve it, the tool ticks that box next time.
+
+Running from a terminal with `pause_at_failed_question` on, the answers you give by hand
+during the "Help Needed" pause are captured too, already approved. Only the fields that were
+empty when the pause began count; stay on the same page of the form until you click Continue.
+
+**Sensitive questions never use this**: work authorization, visa, citizenship, security
+clearance, salary, disability and veteran status are answered only from the settings above.
+
+Review them in the **Answers** tab of the control panel: filter pending or approved, correct the
+text and approve, or delete. The tab title shows how many are pending, and the run summary
+reports the same count. The file is yours and is ignored by git; delete a remembered answer to
+make the tool treat that question as new again, or delete the file to start over.
 
 ## Not yet implemented
 

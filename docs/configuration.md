@@ -5,7 +5,8 @@ to change it, and they work together:
 
 - **The control panel** (`python app.py`, or the `start.*` launcher) — a local web page
   with the common settings laid out in tabs: **Account, Profile, Search, Filters, Run
-  settings**. What you save there is written to `user_config.json` at the project root.
+  settings**, plus **Run** (start, stop, log, history) and **Answers** (the review queue of
+  answers the tool learned, see [questions](config-questions.md)). What you save there is written to `user_config.json` at the project root.
 - **Editing `config/*.py` directly** — the classic route, and the only route for the
   handful of settings the control panel does not expose.
 
@@ -14,6 +15,18 @@ already exist there — so the panel can never introduce a setting the code does
 about. If `user_config.json` does not exist, everything comes from the `.py` files and the
 tool behaves exactly as it always has. Nothing is ever uploaded anywhere.
 
+## Schedule windows
+
+The **Run** tab can start and stop the tool for you. Add one or more windows (weekdays, start
+and end time, in your computer's local time) and save. When a window begins the panel starts
+the tool if it is not running; when the window ends it stops it. A window that ends before it
+starts runs overnight. Manual Start and Stop keep working; a Stop you click inside a window
+holds until the next window begins.
+
+Windows only fire **while the control panel program is running**: the scheduler is part of
+that process, so keep the launcher window open (the browser tab may be closed). They are stored in the `schedule`
+section of `user_config.json`.
+
 ## Do it in this order
 
 | Step | File | What goes in it |
@@ -21,7 +34,7 @@ tool behaves exactly as it always has. Nothing is ever uploaded anywhere.
 | 1 | [`config/personals.py`](config-personals.md) | Your name, phone, address, and the equal-opportunity answers |
 | 2 | [`config/questions.py`](config-questions.md) | Answers to Easy Apply questions: experience, work authorization, salary, notice period, resume path |
 | 3 | [`config/search.py`](config-search.md) | What to search for, which filters to apply, and which jobs to skip |
-| 4 | [`config/secrets.py`](config-secrets.md) | LinkedIn login (optional) and the optional AI setup |
+| 4 | [`config/secrets.py`](config-secrets.md) | LinkedIn login (optional), the optional AI setup and optional Telegram notifications |
 | 5 | [`config/settings.py`](config-settings.md) | How the bot itself runs: click gap, background mode, screen awake, driver management |
 
 Then run `runAiBot.py` and watch it work. Or run `app.py` for the control panel, which also

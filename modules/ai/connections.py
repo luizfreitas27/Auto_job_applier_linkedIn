@@ -39,11 +39,7 @@ import config.secrets as cfg
 from config.settings import showAiErrorAlerts
 from modules.helpers import print_lg, critical_error_log, logger, convert_to_json
 from modules.ai.prompts import extract_skills_prompt, ai_answer_prompt
-
-try:
-    from pyautogui import confirm
-except Exception:  # pyautogui may be unavailable in headless environments
-    confirm = None
+from modules.dialogs import confirm      # degrades to a log line when there is no desktop
 
 
 # Whether to keep popping up AI error dialogs (disabled once the user asks to pause them).
@@ -53,13 +49,10 @@ _alerts_enabled = bool(showAiErrorAlerts)
 def _ai_error_alert(message: str, error: Exception, title: str = "AI Error") -> None:
     '''Log an AI error and (optionally) show a dismissible dialog, mirroring the rest of the tool.'''
     global _alerts_enabled
-    if _alerts_enabled and confirm is not None:
-        try:
-            choice = confirm(f"{message}\n\n{error}\n", title, ["Pause AI alerts", "Okay, continue"])
-            if choice == "Pause AI alerts":
-                _alerts_enabled = False
-        except Exception:
-            pass
+    if _alerts_enabled:
+        choice = confirm(f"{message}\n\n{error}\n", title, ["Pause AI alerts", "Okay, continue"])
+        if choice == "Pause AI alerts":
+            _alerts_enabled = False
     critical_error_log(message, error)
 
 
@@ -210,9 +203,9 @@ def _build_answer_graph(model):
 
         build_prompt -> generate -> (route by question type) -> format_text | select_option
 
-    Free-text questions are returned as-is; select questions are snapped to one of
-    the allowed options. The graph gives us a clean seam to extend later (validation,
-    retries, resume/cover-letter nodes).
+    Free-text questions are returned as-is; select questions are accepted only when the
+    model named one of the allowed options, else "". The graph gives us a clean seam to
+    extend later (validation, retries, resume/cover-letter nodes).
     '''
     def build_prompt(state: _AnswerState) -> dict:
         prompt = ai_answer_prompt.format(state.get("user_information") or "N/A", state.get("question") or "")
@@ -235,7 +228,13 @@ def _build_answer_graph(model):
         return {"answer": (state.get("raw") or "").strip()}
 
     def select_option(state: _AnswerState) -> dict:
-        raw = (state.get("raw") or "").strip()
+        '''
+        The option the model named, or "" when it named none of them. Exact text, tolerating
+        case and surrounding quotes/whitespace only. No substring guessing: "Yes, absolutely"
+        is not an answer to a form offering "Yes" and "No", and a model that paraphrases must
+        not be forced into an option it did not choose. The caller leaves the control alone.
+        '''
+        raw = (state.get("raw") or "").strip().strip('"\'').strip()
         options = state.get("options") or []
         for opt in options:                       # exact
             if raw == opt:
@@ -244,10 +243,10 @@ def _build_answer_graph(model):
         for opt in options:                       # case-insensitive
             if low == opt.lower():
                 return {"answer": opt}
-        for opt in options:                       # substring (either direction)
-            if opt.lower() in low or low in opt.lower():
-                return {"answer": opt}
-        return {"answer": raw}
+        if raw:
+            logger.warning('AI answered "%s" to "%s", which is none of the options %s. Rejected.',
+                           raw, state.get("question") or "", list(options))
+        return {"answer": ""}
 
     def route(state: _AnswerState) -> str:
         return "select" if state.get("question_type") in ("single_select", "multiple_select") else "text"

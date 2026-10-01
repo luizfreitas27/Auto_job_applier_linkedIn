@@ -25,11 +25,9 @@ python runAiBot.py             # the bot directly (opens Chrome at import time)
 `requirements.txt` is fully pinned; `pip install -r requirements.txt -r requirements-dev.txt`
 for a manual setup. There is no linter configured.
 
-Test environment caveat: `pyautogui` connects to an X display and needs `tkinter` at import
-time, so every test that imports `runAiBot` or `modules/ai/connections.py` errors out on a
-headless or Wayland machine without `python3-tk` and `~/.Xauthority`. Those errors are
-environmental, not regressions. `tests/test_app_integration.py` and `tests/test_helpers.py`
-run anywhere. The `live` marker (one OpenAI smoke test) runs only when `OPENAI_API_KEY` is set.
+The suite runs on any machine, including one without a display or `tkinter`, and in GitHub
+Actions (`.github/workflows/tests.yml`). The `live` marker (one OpenAI smoke test) runs only
+when `OPENAI_API_KEY` is set.
 
 ## Architecture
 
@@ -37,9 +35,20 @@ run anywhere. The `live` marker (one OpenAI smoke test) runs only when `OPENAI_A
 
 - `modules/open_chrome.py` **launches Chrome when imported**. `runAiBot.py` does
   `from modules.open_chrome import *` and uses `driver`, `wait`, `actions` as module globals.
+  With `auto_manage_driver = True` it uses SeleniumBase UC Mode (`seleniumbase.Driver(uc=True,
+  ...)`, imported lazily, in `create_chrome_session()`; ADR 0001), which returns a plain Selenium WebDriver; `False` is plain
+  Selenium via Selenium Manager with no anti-detection. `uc_driver_kwargs()` and
+  `plain_selenium_options()` are the testable seams. `seleniumbase` pins `selenium` and
+  `pytest` exactly (pytest 9 on Python 3.11+); bump them together, and note pytest 9 attaches
+  its capture handlers to non-propagating loggers during a test.
   Tests stub it with `sys.modules["modules.open_chrome"] = types.ModuleType(...)` before
   importing `runAiBot` (see `tests/test_runaibot_fixes.py`).
 - `modules/helpers.py` calls `setup_logging()` at import.
+- `modules/dialogs.py` is the **only** module allowed to import `pyautogui`, and it does so
+  lazily on the first dialog. `pyautogui` opens the X display and imports `tkinter` at import
+  time, so a bare import anywhere else breaks headless machines and the test suite
+  (`tests/test_dialogs.py` enforces this). Call `dialogs.alert/confirm/press`; they degrade
+  to a log line when there is no desktop or after `dialogs.set_enabled(False)`.
 - Every `config/*.py` ends with `_overrides.apply(__name__, globals())`, which overlays
   `user_config.json` onto the module's globals.
 - `app.py` builds `DEFAULTS` at import by temporarily disabling the override loader and
@@ -69,13 +78,23 @@ user's config, `runAiBot.py` reads them defensively with `globals().get("name", 
   `.bot_run.pid`; the UI polls `/api/logs?offset=` and `/api/status`.
 - Security rules that must not be loosened: binds to `127.0.0.1` only, `debug=False`, **no
   CORS headers** (flask-cors was removed on purpose), a `before_request` hook that rejects
-  non-loopback `Host` headers and any POST/PUT without `X-Requested-With: control-panel`, and
+  non-loopback `Host` headers and any POST/PUT/DELETE without `X-Requested-With: control-panel`, and
   `_mask_secrets()` which replaces every schema `password`-type value with `SECRET_MASK` in
   responses. Sending the mask back on save means "keep the stored value". Templates hardcode
   the same header and mask string.
 - `runAiBot.py` detects a non-interactive run (`run_in_background` or stdout not a TTY, which
-  is the case under the panel) and replaces `pyautogui.alert/confirm` with log lines, because
-  those are blocking Tk modals nobody can click.
+  is the case under the panel) and calls `dialogs.set_enabled(False)`, because desktop
+  dialogs are blocking Tk modals nobody can click there.
+- Review queue: `GET/DELETE /api/answers?state=` and `POST/DELETE /api/answers/<id>` over a
+  module-level `AnswerMemory`, rendered by the Answers tab (`buildAnswersPanel`/`loadAnswers`
+  in `control_panel.html`). The memory reloads itself when the file's mtime/size changes, so
+  the bot process and the panel share `answers_memory.json` without clobbering each other.
+- Schedule windows: `modules/schedule.py` is pure (parse/validate windows, `window_is_active`,
+  edge-triggered `decide`); `app.py` owns the clock and a daemon thread calling
+  `scheduler_tick()` every `SCHEDULER_INTERVAL_SECONDS`, which uses the same
+  `start_bot()`/`stop_bot()` as the Run buttons. `user_config.json` is written only through
+  `_write_user_config()` (atomic replace) under `_user_config_lock`. Windows live in the `schedule` section of `user_config.json` via `/api/schedule`,
+  outside the config schema. The thread starts only under `__main__`, never in tests.
 - `modules/updater.py`: compares `VERSION` with the upstream raw file and offers
   `git pull --ff-only`; it refuses unless `origin` points at the upstream repo, so in this
   fork the update button does nothing.
@@ -96,12 +115,45 @@ ordered fallback list, login locators are module constants near the top. `tests/
 are captured LinkedIn DOM snapshots and `tests/test_selectors_groundtruth.py` asserts the
 locators used in code still match them; update both together when LinkedIn changes.
 
+### Answer memory (`modules/answers_memory.py`)
+
+`answers_memory.json` at the project root (gitignored) holds every answer given to an
+unrecognised question: normalised label + control kind → answer, source (`ai`/`user`), state
+(`pending`/`approved`), uses, last job link. `runAiBot.answer_from_memory_or_ai()` is the single
+fallback the form branches call after the configured-answer heuristics fail: sensitive check
+(`is_sensitive_question`, whole-word on `sensitive_terms`) → memory lookup (exact, then
+`difflib` ≥ 0.92 within the same kind, logged) → AI, whose answer is remembered as pending.
+Select and radio branches call `option_from_memory_or_ai()` only when there is no configured
+answer (`not answer`): memory text snapped to this form's options via
+`match_answer_to_option`, then the AI shown the non-placeholder options, accepted only
+verbatim. Both fallbacks share `ask_ai()`. Checkboxes tick only from an `approved` entry; an
+unrecognised unticked box is remembered as pending with source `form`. `pause_for_help()` is the
+"Help Needed" pause: it snapshots the form with `read_form_state()` before and after the
+dialog and `capture_manual_answers()` remembers what the user filled in as approved (source
+`user`). Form locators and title readers (`form_question_xpath`, `select_title`,
+`radio_title`, `text_title`, `textarea_title`, `checkbox_key`) are shared by both. Every public method reloads the file if another process changed it, and
+`record_use` re-finds its entry by id, so entries are never trusted as current. The module
+itself knows nothing about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
+with `monkeypatch.setattr(bot, "answers_memory", ...)`.
+
 ### AI layer (`modules/ai/`)
 
 Provider-agnostic via LangChain `init_chat_model` + a small LangGraph pipeline. Only two
 providers exist internally: `"gemini"` → `google_genai`, everything else (openai, deepseek,
 ollama, lm studio, vllm) → `openai` with `llm_api_url` as `base_url`. `extract_skills` uses
 structured output and falls back to plain JSON parsing. Prompts live in `prompts.py`.
+`answer_question(..., options=[...], question_type="single_select")` returns the option the
+model named exactly (case/quotes tolerated) or `""`; never a paraphrase. The applicant text
+the AI sees is `profile.build_candidate_profile()`, assembled from the config modules
+(never phone, street, zip, email, citizenship status or current salary) plus
+`user_information_all`.
+
+### Notifications (`modules/notify.py`)
+
+`send_message(text, token, chat_id)` posts to the Telegram Bot API with the standard
+library; it is a no-op when either setting is blank and returns False after one warning on any
+failure, never raising. `runAiBot.main()` calls `notify_run_end()` (the run summary) in its
+`finally` and `notify_error()` from the fatal handlers; both read the live secrets.
 
 ### Logging
 
