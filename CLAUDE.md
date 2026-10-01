@@ -83,6 +83,12 @@ user's config, `runAiBot.py` reads them defensively with `globals().get("name", 
   module-level `AnswerMemory`, rendered by the Answers tab (`buildAnswersPanel`/`loadAnswers`
   in `control_panel.html`). The memory reloads itself when the file's mtime/size changes, so
   the bot process and the panel share `answers_memory.json` without clobbering each other.
+- Schedule windows: `modules/schedule.py` is pure (parse/validate windows, `window_is_active`,
+  edge-triggered `decide`); `app.py` owns the clock and a daemon thread calling
+  `scheduler_tick()` every `SCHEDULER_INTERVAL_SECONDS`, which uses the same
+  `start_bot()`/`stop_bot()` as the Run buttons. `user_config.json` is written only through
+  `_write_user_config()` (atomic replace) under `_user_config_lock`. Windows live in the `schedule` section of `user_config.json` via `/api/schedule`,
+  outside the config schema. The thread starts only under `__main__`, never in tests.
 - `modules/updater.py`: compares `VERSION` with the upstream raw file and offers
   `git pull --ff-only`; it refuses unless `origin` points at the upstream repo, so in this
   fork the update button does nothing.

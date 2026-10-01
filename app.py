@@ -32,12 +32,14 @@ import copy
 import signal
 import subprocess
 import threading
+import time
 import importlib
 
 import config_schema
 from config import _overrides
 from modules import updater
 from modules.answers_memory import AnswerMemory, STATES
+from modules import schedule as schedule_windows
 
 app = Flask(__name__)
 
@@ -167,6 +169,20 @@ def _mask_secrets(config: dict) -> dict:
 # ===========================================================================
 # Config API helpers
 # ===========================================================================
+_user_config_lock = threading.Lock()
+
+
+def _write_user_config(data: dict) -> None:
+    '''
+    The one way user_config.json is written: a sibling temp file replaced over the real one,
+    so a crash mid-write never leaves an empty file (which would read as "no settings").
+    Callers hold `_user_config_lock` around their read-modify-write so two panel requests
+    (Save settings, Save schedule) cannot drop each other's change.
+    '''
+    temporaryPath = USER_CONFIG_PATH + ".tmp"
+    with open(temporaryPath, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, ensure_ascii=False)
+    os.replace(temporaryPath, USER_CONFIG_PATH)
 def _effective_config() -> dict:
     '''
     Return {config_module: {key: value}} of the pristine defaults overlaid with
@@ -456,31 +472,31 @@ def api_save_config():
         return jsonify({"error": "Unknown settings rejected", "unknown": unknown}), 400
 
     # Read-modify-write user_config.json.
-    current = _overrides.load_user_config()
-    for section, values in coerced.items():
-        target = current.get(section)
-        if not isinstance(target, dict):
-            target = {}
-        target.update(values)
-        current[section] = target
-
-    try:
-        with open(USER_CONFIG_PATH, "w", encoding="utf-8") as file:
-            json.dump(current, file, indent=2, ensure_ascii=False)
-    except OSError as err:
-        return jsonify({"error": f"Could not save settings: {err}"}), 500
+    with _user_config_lock:
+        current = _overrides.load_user_config()
+        for section, values in coerced.items():
+            target = current.get(section)
+            if not isinstance(target, dict):
+                target = {}
+            target.update(values)
+            current[section] = target
+        try:
+            _write_user_config(current)
+        except OSError as err:
+            return jsonify({"error": f"Could not save settings: {err}"}), 500
 
     return jsonify(_mask_secrets(current))
 
 
-@app.route('/api/run', methods=['POST'])
-def api_run():
-    '''Starts the bot as a subprocess if it isn't already running.'''
+def start_bot() -> tuple[dict, int]:
+    '''
+    Start the bot as a subprocess unless it is already running. Returns (status, http code);
+    the Run tab's Start button and the scheduler both come through here.
+    '''
     global _bot_proc
     with _bot_lock:
         if _is_running():
-            return jsonify({"running": True, "pid": _bot_proc.pid,
-                            "message": "The tool is already running."})
+            return {"running": True, "started": False, "pid": _bot_proc.pid, "message": "The tool is already running."}, 200
         try:
             # Truncate the log at the start of each run.
             log_file = open(LOG_PATH, "w", encoding="utf-8")
@@ -495,25 +511,37 @@ def api_run():
                 popen_kwargs["start_new_session"] = True
             _bot_proc = subprocess.Popen(_bot_command(), **popen_kwargs)
         except Exception as err:
-            return jsonify({"running": False, "error": str(err)}), 500
+            return {"running": False, "started": False, "error": str(err)}, 500
         try:
             with open(PID_PATH, "w", encoding="utf-8") as pid_file:
                 pid_file.write(str(_bot_proc.pid))
         except OSError:
             pass
-        return jsonify({"running": True, "pid": _bot_proc.pid})
+        return {"running": True, "started": True, "pid": _bot_proc.pid}, 200
 
 
-@app.route('/api/stop', methods=['POST'])
-def api_stop():
-    '''Stops the running bot subprocess (and its children where possible).'''
+def stop_bot() -> dict:
+    '''Stop the bot subprocess (and its children where possible). Idempotent.'''
     global _bot_proc
     with _bot_lock:
         if _bot_proc is not None:
             _terminate(_bot_proc)
             _bot_proc = None
         _remove_pid_file()
-        return jsonify({"running": False})
+        return {"running": False}
+
+
+@app.route('/api/run', methods=['POST'])
+def api_run() -> tuple:
+    '''Starts the bot as a subprocess if it isn't already running.'''
+    status, code = start_bot()
+    return jsonify(status), code
+
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop() -> Response:
+    '''Stops the running bot subprocess (and its children where possible).'''
+    return jsonify(stop_bot())
 
 
 @app.route('/api/status', methods=['GET'])
@@ -624,6 +652,120 @@ def api_delete_answers_in_state() -> Response | tuple:
 
 
 # ===========================================================================
+# Schedule windows (see modules/schedule.py). Stored in the "schedule" section
+# of user_config.json; the override loader ignores sections that are not config
+# modules, so this lives beside the settings without touching them.
+# ===========================================================================
+SCHEDULER_INTERVAL_SECONDS = 30
+_schedule_active_before: bool | None = None       # what the last scheduler tick saw; None before the first
+_scheduler_thread: threading.Thread | None = None
+
+
+def read_schedule() -> tuple[list[schedule_windows.ScheduleWindow], str | None]:
+    '''
+    The configured windows and, when the "schedule" section of user_config.json is not
+    valid, the reason. A bad section must not stop the panel, but it must not be silently
+    treated as "no windows" either: the Run tab shows the reason until the user saves again.
+    '''
+    raw = _overrides.load_user_config().get("schedule", {})
+    try:
+        return schedule_windows.parse_windows(raw.get("windows") if isinstance(raw, dict) else None), None
+    except ValueError as err:
+        return [], f"The saved schedule is not valid ({err}). Save a new one to replace it."
+
+
+def load_schedule() -> list[schedule_windows.ScheduleWindow]:
+    '''The configured windows, [] when none or invalid (the scheduler then does nothing).'''
+    return read_schedule()[0]
+
+
+def save_schedule(windows: list[schedule_windows.ScheduleWindow]) -> None:
+    '''Write the windows into the "schedule" section of user_config.json (locked read-modify-write).'''
+    with _user_config_lock:
+        current = _overrides.load_user_config()
+        current["schedule"] = {"windows": _windows_json(windows)}
+        _write_user_config(current)
+
+
+def _windows_json(windows: list[schedule_windows.ScheduleWindow]) -> list[dict]:
+    '''Windows as the panel and the config file carry them.'''
+    return [window.as_dict() for window in windows]
+
+
+@app.route('/api/schedule', methods=['GET'])
+def api_get_schedule() -> Response:
+    '''The schedule windows, whether one is active right now, and why the saved ones are unusable, if so.'''
+    windows, error = read_schedule()
+    body = {"windows": _windows_json(windows),
+            "active_now": schedule_windows.window_is_active(windows, datetime.now())}
+    if error:
+        body["error"] = error
+    return jsonify(body)
+
+
+@app.route('/api/schedule', methods=['POST'])
+def api_save_schedule() -> Response | tuple:
+    '''Replace the schedule windows. Body: {"windows": [{"days": [...], "start": "HH:MM", "end": "HH:MM"}]}.'''
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": 'Expected a JSON object with a "windows" list'}), 400
+    try:
+        windows = schedule_windows.parse_windows(payload.get("windows", []))
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+    try:
+        save_schedule(windows)
+    except OSError as err:
+        return jsonify({"error": f"Could not save the schedule: {err}"}), 500
+    return jsonify({"windows": _windows_json(windows)})
+
+
+def scheduler_tick(now: datetime | None = None) -> str | None:
+    '''
+    One pass of the scheduler: start the bot on entering a window, stop it on leaving one.
+    Edge-triggered, so a bot stopped by hand or finished on its own inside a window is left
+    alone until the next window begins. A start that fails (the process could not be
+    spawned) is retried on the next tick. Returns the action taken, for the log and the tests.
+    '''
+    global _schedule_active_before
+    activeNow = schedule_windows.window_is_active(load_schedule(), now or datetime.now())
+    action = schedule_windows.decide(activeNow, _schedule_active_before)
+    _schedule_active_before = activeNow
+    if action == "start":
+        status, _ = start_bot()
+        if status.get("started"):
+            print("Schedule window began: started the tool.", flush=True)
+        elif status.get("running"):
+            print("Schedule window began: the tool is already running.", flush=True)
+        else:
+            print("Schedule window began but the tool could not start (%s); will try again in %d s."
+                  % (status.get("error"), SCHEDULER_INTERVAL_SECONDS), flush=True)
+            _schedule_active_before = False          # so the next tick sees "entering" again
+    elif action == "stop":
+        stop_bot()
+        print("Schedule window ended: stopped the tool.", flush=True)
+    return action
+
+
+def _scheduler_loop() -> None:
+    '''Run scheduler_tick forever, every SCHEDULER_INTERVAL_SECONDS. Errors are printed, never fatal.'''
+    while True:
+        try:
+            scheduler_tick()
+        except Exception as err:
+            print("Scheduler error: %s" % err, flush=True)
+        time.sleep(SCHEDULER_INTERVAL_SECONDS)
+
+
+def start_scheduler() -> None:
+    '''Start the scheduler thread once. Daemon: it dies with the panel, which is the whole point.'''
+    global _scheduler_thread
+    if _scheduler_thread is None or not _scheduler_thread.is_alive():
+        _scheduler_thread = threading.Thread(target=_scheduler_loop, name="schedule-windows", daemon=True)
+        _scheduler_thread.start()
+
+
+# ===========================================================================
 # Update check (see modules/updater.py)
 # ===========================================================================
 def _freeze_config() -> None:
@@ -640,14 +782,14 @@ def _freeze_config() -> None:
     a shipped default stops reaching that user. Acceptable - a hand-edited file
     was already pinned. Freeze only the keys that differ from HEAD if it bites.
     '''
-    current = _overrides.load_user_config()
-    for section, values in _effective_config().items():
-        if not isinstance(current.get(section), dict):
-            current[section] = {}
-        for key, value in values.items():
-            current[section].setdefault(key, value)
-    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as file:
-        json.dump(current, file, indent=2, ensure_ascii=False)
+    with _user_config_lock:
+        current = _overrides.load_user_config()
+        for section, values in _effective_config().items():
+            if not isinstance(current.get(section), dict):
+                current[section] = {}
+            for key, value in values.items():
+                current[section].setdefault(key, value)
+        _write_user_config(current)
 
 
 @app.route('/api/update-check', methods=['GET'])
@@ -708,7 +850,8 @@ if __name__ == '__main__':
     # The launcher scripts set PANEL_OPEN_BROWSER=1 so the browser opens itself,
     # to the right port, cross-platform. Running `python app.py` by hand won't.
     if os.environ.get("PANEL_OPEN_BROWSER", "").strip() not in ("", "0", "false", "False"):
-        import threading
         import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    # Schedule windows only fire while this process is alive: the thread is a daemon of it.
+    start_scheduler()
     app.run(host="127.0.0.1", port=port, debug=False)
