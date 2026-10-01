@@ -41,7 +41,7 @@ class Market:
         return self.current_salary_monthly if self.salary_period == "monthly" else self.current_salary_annual
 
 
-def _number(value) -> float:
+def _number(value: object) -> float:
     '''A salary setting as a number; blank, None or junk count as 0 (meaning "fall back").'''
     try:
         return float(value or 0)
@@ -49,8 +49,8 @@ def _number(value) -> float:
         return 0.0
 
 
-def _tidy(value: float) -> float:
-    '''Whole amounts stay whole (8000, not 8000.0) so they type cleanly into a form.'''
+def _tidy(value: float) -> int | float:
+    '''A money amount as it should be typed into a form: whole amounts whole (8000, not 8000.0), else two decimals.'''
     return int(value) if float(value).is_integer() else round(value, 2)
 
 
@@ -68,8 +68,9 @@ def resolve_market(markets: ModuleType, questions: ModuleType, search: ModuleTyp
     legacyLocation = str(getattr(search, "search_location", "") or "")
 
     if name == "brasil":
-        desiredMonthly = _number(getattr(markets, "br_desired_salary_monthly", 0)) or legacyDesired
-        currentMonthly = _number(getattr(markets, "br_current_salary_monthly", 0)) or legacyCurrent
+        # The legacy settings are annual figures; a blank Brazilian value falls back to a twelfth.
+        desiredMonthly = _number(getattr(markets, "br_desired_salary_monthly", 0)) or legacyDesired / 12
+        currentMonthly = _number(getattr(markets, "br_current_salary_monthly", 0)) or legacyCurrent / 12
         return Market(
             name=name, currency=str(getattr(markets, "br_currency", "BRL") or "BRL"), salary_period="monthly",
             desired_salary_annual=_tidy(desiredMonthly * 12), desired_salary_monthly=_tidy(desiredMonthly),

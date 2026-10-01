@@ -55,7 +55,8 @@ def test_international_values_win_over_the_legacy_ones_when_set():
 
 def test_blank_brazilian_values_fall_back_to_the_legacy_settings():
     m = resolve_market(markets(market="brasil", br_search_location="", br_search_terms=[]), LEGACY_Q, LEGACY_S)
-    assert m.desired_salary_monthly == 120000                       # the legacy number, taken as monthly
+    assert m.desired_salary_monthly == 10000                        # the legacy ANNUAL figure, as a monthly one
+    assert m.desired_salary_annual == 120000
     assert m.search_location == "United States" and m.search_terms == ("Software Engineer",)
 
 
@@ -89,8 +90,10 @@ def set_market(bot, monkeypatch, m: Market):
     monkeypatch.setattr(bot, "active_market", m)
     monkeypatch.setattr(bot, "desired_salary", str(m.desired_salary_annual))
     monkeypatch.setattr(bot, "desired_salary_monthly", str(m.desired_salary_monthly))
+    monkeypatch.setattr(bot, "salary_in_market_period", m.salary_period == "monthly")
     monkeypatch.setattr(bot, "current_ctc", str(m.current_salary_annual))
     monkeypatch.setattr(bot, "current_ctc_monthly", str(m.current_salary_monthly))
+
 
 
 BR = resolve_market(markets(market="brasil", br_desired_salary_monthly=8000, br_current_salary_monthly=6500), LEGACY_Q, LEGACY_S)
@@ -169,7 +172,6 @@ def test_a_configured_yes_selects_sim_and_a_no_selects_nao(bot, quiet, monkeypat
     set_market(bot, monkeypatch, BR)
     monkeypatch.setattr(bot, "legally_authorized", "Yes")
     modal, select = dropdown(bot, monkeypatch, "Você está legalmente autorizado a trabalhar no Brasil?", ["Select an option", "Sim", "Não"])
-    monkeypatch.setattr(bot, "authorization_terms", bot.authorization_terms + ["autorizado a trabalhar"])
     bot.answer_questions(modal, set(), "Remoto")
     assert select.picked == "Sim"
 
@@ -177,6 +179,48 @@ def test_a_configured_yes_selects_sim_and_a_no_selects_nao(bot, quiet, monkeypat
     modal, mouse, options = radio_group(bot, monkeypatch, "Precisa de patrocínio de visto?", ["Sim, preciso", "Não, não preciso"])
     bot.answer_questions(modal, set(), "Remoto")
     assert mouse.clicked is options[1]
+
+
+@pytest.mark.parametrize("label", [
+    "Are you willing to work on-site?",            # "site" must not mean website
+    "Disponibilidade para viagens?",               # not a notice period
+    "Estado civil",                                # marital status, not the state of residence
+    "Quantos anos você tem?",                      # age, not years of experience
+])
+def test_near_miss_labels_are_not_answered_with_the_wrong_setting(bot, quiet, monkeypatch, label):
+    set_market(bot, monkeypatch, BR)
+    modal, field = text_form(label)
+    bot.answer_questions(modal, set(), "Remoto")
+    assert field.value == ""                       # left for the AI / memory / the user
+
+
+def test_experience_in_years_is_still_the_total(bot, quiet, monkeypatch):
+    set_market(bot, monkeypatch, BR)
+    for label in ("Tempo de experiência em anos", "Years of experience (in years)"):
+        modal, field = text_form(label)
+        bot.answer_questions(modal, set(), "Remoto")
+        assert field.value == str(bot.years_of_experience), label
+    modal, field = text_form("Anos de experiência com Python")
+    bot.answer_questions(modal, set(), "Remoto")
+    assert field.value == ""                       # one skill: the total would be a false answer
+
+
+def test_the_default_market_strings_match_the_legacy_ones_except_the_trailing_zero(bot):
+    '''Whole amounts are typed as 100000, where the old code typed 100000.0; annual strings are unchanged.'''
+    m = resolve_market(markets(), LEGACY_Q, LEGACY_S)
+    assert str(m.desired_salary_annual) == "120000" and str(m.desired_salary_monthly) == "10000"
+
+
+def test_an_invalid_market_at_import_is_an_error_message_not_a_crash(bot, log_records, monkeypatch):
+    import importlib, config.markets as markets
+    monkeypatch.setattr(markets, "market", "europa")
+    importlib.reload(bot)
+    try:
+        assert bot.active_market.name == "internacional"
+        assert any("Invalid market" in r.getMessage() for r in log_records if r.levelname == "ERROR")
+    finally:
+        monkeypatch.setattr(markets, "market", "internacional")
+        importlib.reload(bot)
 
 
 def test_polarity_a_no_never_lands_on_a_sim_option_that_contains_nao(bot, quiet, monkeypatch):
@@ -187,7 +231,6 @@ def test_polarity_a_no_never_lands_on_a_sim_option_that_contains_nao(bot, quiet,
 
 
 def test_search_terms_and_location_follow_the_market(bot):
-    import importlib, runAiBot
     assert bot.search_terms == list(bot.active_market.search_terms)
     assert bot.search_location == bot.active_market.search_location
 

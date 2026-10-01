@@ -113,7 +113,15 @@ re_experience = re.compile(r'[(]?\s*(\d+)\s*[)]?\s*[-to]*\s*\d*[+]*\s*year[s]?',
 
 # The active market (config/markets.py) decides currency, salaries, search terms and location;
 # blank market values fall back to the general settings, so the default market behaves as before.
-active_market = resolve_market(markets_config, questions_config, search_config)
+# ponytail: the star-imported globals `desired_salary`, `current_ctc`, `search_terms` and
+# `search_location` are reassigned here so the ~20 call sites below keep reading bare names.
+# Replace the globals with `active_market.<field>` at the call sites when touching them.
+try:
+    active_market = resolve_market(markets_config, questions_config, search_config)
+except ValueError as e:
+    # validate_config() in main() reports this properly; until then run with the default market.
+    logger.error("Invalid market in config/markets.py (%s). Using 'internacional' until it is fixed.", e)
+    active_market = resolve_market(markets_config, questions_config, search_config, name="internacional")
 desired_salary_lakhs = str(round(active_market.desired_salary_annual / 100000, 2))
 desired_salary_monthly = str(active_market.desired_salary_monthly)
 desired_salary = str(active_market.desired_salary_annual)
@@ -121,6 +129,8 @@ desired_salary = str(active_market.desired_salary_annual)
 current_ctc_lakhs = str(round(active_market.current_salary_annual / 100000, 2))
 current_ctc_monthly = str(active_market.current_salary_monthly)
 current_ctc = str(active_market.current_salary_annual)
+# A salary question naming no period gets the market's own: monthly in brasil, annual abroad.
+salary_in_market_period = active_market.salary_period == "monthly"
 
 search_terms = list(active_market.search_terms)
 search_location = active_market.search_location
@@ -447,7 +457,10 @@ visa_terms = ['sponsor', 'sponsors', 'sponsorship', 'visa', 'visas', 'work permi
 # applicant was not authorized to work.
 authorization_terms = ['employment eligibility', 'legally authorized', 'legally authorised',
                        'authorized to work', 'authorised to work', 'work authorization',
-                       'work authorisation', 'right to work']
+                       'work authorisation', 'right to work',
+                       'autorizado a trabalhar', 'autorizada a trabalhar', 'autorização de trabalho',
+                       'autorizacao de trabalho', 'permissão de trabalho', 'permissao de trabalho',
+                       'direito de trabalhar', 'legalmente autorizado', 'legalmente autorizada']
 citizenship_terms = ['citizen', 'citizens', 'citizenship', 'cidadania', 'cidadão', 'cidadao', 'cidadã']
 
 # Answer -> dropdown option mapping (see the NoSuchElementException fallback in
@@ -494,6 +507,11 @@ month_terms = ['month', 'months', 'monthly', 'mês', 'mes', 'meses', 'mensal', '
 week_terms = ['week', 'weeks', 'weekly', 'semana', 'semanas', 'semanal']
 annual_terms = ['year', 'yearly', 'annual', 'annually', 'per annum', 'ano', 'anual', 'anuais', 'por ano']
 
+# Location words, English and Portuguese, used by the select and text branches alike.
+country_terms = ['country', 'país', 'pais']
+state_terms = ['state', 'province', 'estado', 'uf']
+city_terms = ['city', 'cidade']
+
 # `years_of_experience` is a TOTAL, so it only answers a question that asks for the total.
 total_experience_terms = ['anos de experiência', 'anos de experiencia', 'tempo de experiência', 'tempo de experiencia',
                           'years of experience', 'years experience', 'work experience',
@@ -503,6 +521,9 @@ total_experience_terms = ['anos de experiência', 'anos de experiencia', 'tempo 
 # ...and not when that question is narrowed to one skill: "years of Kubernetes experience",
 # "years of experience IN Kubernetes", "experience WITH Python", "how many years USING AWS".
 skill_qualifier_terms = ['in', 'with', 'using', 'on', 'em', 'com']
+# "...experience in years" / "experiência em anos" names a unit, not a skill: strip it before
+# looking for a qualifier.
+period_unit_phrases = ['in years', 'in months', 'em anos', 'em meses']
 
 def work_authorization_answer(label: str) -> str | None:
     '''
@@ -994,16 +1015,16 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     answer = prev_answer
                 elif label_has(label, 'gender', 'sex', 'sexual orientation', 'gênero', 'genero', 'sexo'):
                     answer = gender
-                elif label_has(label, 'disability', 'deficiência', 'deficiencia', 'pcd'):
+                elif label_has(label, *disability_terms):
                     answer = disability_status
                 elif label_has(label, 'proficiency', 'proficiência', 'proficiencia', 'fluência', 'fluencia'):
                     answer = 'Professional'
-                elif label_has(label, 'location', 'city', 'state', 'country', 'cidade', 'estado', 'país', 'pais', 'localização', 'localizacao'):
-                    if label_has(label, 'country', 'país', 'pais'):
+                elif label_has(label, 'location', 'localização', 'localizacao', *city_terms, *state_terms, *country_terms) and not label_has(label, 'civil'):
+                    if label_has(label, *country_terms):
                         answer = country
-                    elif label_has(label, 'state', 'estado'):
+                    elif label_has(label, *state_terms):
                         answer = state
-                    elif label_has(label, 'city', 'cidade'):
+                    elif label_has(label, *city_terms):
                         answer = current_city if current_city else work_location
                     else:
                         answer = work_location
@@ -1065,7 +1086,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 auth_answer = work_authorization_answer(label)
                 if auth_answer is not None: answer = auth_answer
                 elif label_has(label, 'veteran', 'protected', 'veterano'): answer = veteran_status
-                elif label_has(label, 'disability', 'handicapped', 'deficiência', 'deficiencia', 'pcd'): 
+                elif label_has(label, *disability_terms): 
                     answer = disability_status
                 else: answer = answer_common_questions(label,answer)
                 foundOption = try_xp(radio, f".//label[normalize-space()='{answer}']", False) if answer else False
@@ -1109,7 +1130,10 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     # Only the total. "How many years of Kubernetes experience do you have?"
                     # and "...experience with Python?" ask about ONE skill, and the user's
                     # total is a false answer to those - leave them for config/questions.py.
-                    if find_bad_word(label, total_experience_terms) and not find_bad_word(label, skill_qualifier_terms):
+                    labelWithoutUnit = label
+                    for phrase in period_unit_phrases:
+                        labelWithoutUnit = labelWithoutUnit.replace(phrase, ' ')
+                    if find_bad_word(label, total_experience_terms) and not find_bad_word(labelWithoutUnit, skill_qualifier_terms):
                         answer = years_of_experience
                 elif label_has(label, 'phone', 'mobile', 'telefone', 'celular', 'whatsapp'): answer = phone_number
                 elif label_has(label, 'street', 'endereço', 'endereco', 'rua', 'logradouro'): answer = street
@@ -1133,14 +1157,15 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     elif label_has(label, 'last', 'surname', 'sobrenome') and not label_has(label, 'first', 'primeiro'): answer = last_name
                     elif label_has(label, 'employer', 'empregador', 'empresa'): answer = recent_employer
                     else: answer = full_name
-                elif label_has(label, 'notice', 'aviso prévio', 'aviso previo', 'aviso', 'disponibilidade'):
+                elif label_has(label, 'notice', 'aviso prévio', 'aviso previo'):
                     if label_has(label, *month_terms):
                         answer = notice_period_months
                     elif label_has(label, *week_terms):
                         answer = notice_period_weeks
                     else: answer = notice_period
-                elif label_has(label, 'salary', 'compensation', 'ctc', 'pay', *salary_terms):
-                    # Which period the question asks for; the active market already holds both.
+                elif label_has(label, 'pay', *salary_terms):      # bare 'pay' answers here but is not a sensitivity trigger
+                    # Which period the question asks for; the active market already holds both,
+                    # and a question naming no period gets the market's own ("as entered").
                     if label_has(label, 'current', 'present', 'atual'):
                         if label_has(label, *month_terms):
                             answer = current_ctc_monthly
@@ -1149,7 +1174,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                         elif label_has(label, *annual_terms):
                             answer = current_ctc
                         else:
-                            answer = current_ctc_monthly if active_market.salary_period == "monthly" else current_ctc
+                            answer = current_ctc_monthly if salary_in_market_period else current_ctc
                     else:
                         if label_has(label, *month_terms):
                             answer = desired_salary_monthly
@@ -1158,15 +1183,15 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                         elif label_has(label, *annual_terms):
                             answer = desired_salary
                         else:
-                            answer = desired_salary_monthly if active_market.salary_period == "monthly" else desired_salary
+                            answer = desired_salary_monthly if salary_in_market_period else desired_salary
                 elif label_has(label, 'linkedin'): answer = linkedIn
-                elif label_has(label, 'website', 'blog', 'portfolio', 'link', 'links', 'site', 'portfólio', 'github'): answer = website
+                elif label_has(label, 'website', 'blog', 'portfolio', 'link', 'links', 'portfólio'): answer = website
                 elif label_has(label, 'scale of 1-10'): answer = confidence_level
                 elif label_has(label, 'headline'): answer = linkedin_headline
                 elif label_has(label, 'hear', 'heard', 'come across') and label_has(label, 'this') and label_has(label, 'job', 'position'): answer = "https://github.com/GodsScion/Auto_job_applier_linkedIn"
-                elif label_has(label, 'state', 'province', 'estado', 'uf'): answer = state
+                elif label_has(label, *state_terms) and not label_has(label, 'civil'): answer = state   # "Estado civil" is marital status
                 elif label_has(label, 'zip', 'zipcode', 'postal', 'postcode', 'code', 'cep'): answer = zipcode
-                elif label_has(label, 'country', 'país', 'pais'): answer = country
+                elif label_has(label, *country_terms): answer = country
                 else: answer = answer_common_questions(label,answer)
                 if answer == "" and fallbackAllowed:
                     answer = answer_from_memory_or_ai(label_org, "text", job_description, job_link)

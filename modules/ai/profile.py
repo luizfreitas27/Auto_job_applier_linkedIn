@@ -16,6 +16,10 @@ reaches the AI should need them, and they stay off the wire.
 from __future__ import annotations
 
 from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from modules.markets import Market
 
 
 def _text(value: object | None) -> str:
@@ -25,7 +29,8 @@ def _text(value: object | None) -> str:
     return str(value).strip()
 
 
-def build_candidate_profile(personals: ModuleType | None = None, questions: ModuleType | None = None, market=None) -> str:
+def build_candidate_profile(personals: ModuleType | None = None, questions: ModuleType | None = None,
+                            market: "Market | None" = None) -> str:
     '''
     Plain-text block describing the applicant, one "Label: value" line per configured
     setting, followed by `user_information_all` verbatim. Blank settings are skipped.

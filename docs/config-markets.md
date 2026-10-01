@@ -27,6 +27,10 @@ market's own period: monthly in Brazil ("Pretensão salarial" → `8000`), annua
 ("Expected salary" → `90000`). Salary questions are **sensitive**: they are answered only from
 these settings, never by the AI or the answer memory.
 
+Changing `market` takes effect on the next run: the bot reads it when it starts. If the
+Brazilian salaries are left at `0`, the general `desired_salary` / `current_ctc` (annual figures)
+are divided by 12.
+
 ## Portuguese forms
 
 The tool recognises company form questions in Portuguese alongside English: salário, pretensão,
