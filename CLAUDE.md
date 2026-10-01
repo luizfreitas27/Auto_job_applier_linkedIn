@@ -107,8 +107,12 @@ unrecognised question: normalised label + control kind → answer, source (`ai`/
 fallback the form branches call after the configured-answer heuristics fail: sensitive check
 (`is_sensitive_question`, whole-word on `sensitive_terms`) → memory lookup (exact, then
 `difflib` ≥ 0.92 within the same kind, logged) → AI, whose answer is remembered as pending.
-The module itself knows nothing about sensitivity; the bot gates before calling it. Tests
-wire a temp-file `AnswerMemory` in with `monkeypatch.setattr(bot, "answers_memory", ...)`.
+Select and radio branches call `remembered_option()` only when the question is unrecognised
+(`answer is None`), snapping the remembered text to this form's options via
+`match_answer_to_option`. Checkboxes tick only from an `approved` entry; an unrecognised
+unticked box is remembered as pending with source `form`. The module itself knows nothing
+about sensitivity; the bot gates before calling it. Tests wire a temp-file `AnswerMemory` in
+with `monkeypatch.setattr(bot, "answers_memory", ...)`.
 
 ### AI layer (`modules/ai/`)
 

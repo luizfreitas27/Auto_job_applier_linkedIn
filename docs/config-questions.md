@@ -92,6 +92,12 @@ times it was used and the last job it was used on. Remembered answers are used i
 including pending ones; reviewing them improves future applications, it does not block the
 current one.
 
+Dropdowns and radio buttons work the same way: the remembered answer is text, and the tool
+picks whichever option on the current form means the same thing, so a remembered "Yes" fits a
+form offering "Yes / No" and one offering "Yes, I am / No, I am not". Checkboxes are stricter:
+the tool never ticks a box on its own. An unticked box it does not recognise is added to the
+file as a pending `checked` answer; once you approve it, the tool ticks that box next time.
+
 **Sensitive questions never use this**: work authorization, visa, citizenship, security
 clearance, salary, disability and veteran status are answered only from the settings above.
 

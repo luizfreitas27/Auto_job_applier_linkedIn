@@ -39,7 +39,9 @@ ROOT = Path(__file__).resolve().parent.parent
 MEMORY_PATH = ROOT / "answers_memory.json"
 
 KINDS = ("text", "textarea", "select", "radio", "checkbox")
-SOURCES = ("ai", "user")
+# "form": not an answer anyone gave, but a control the bot saw and left alone (an unticked
+# checkbox) recorded as pending so the user can approve it in the review queue.
+SOURCES = ("ai", "user", "form")
 STATES = ("pending", "approved")
 SIMILARITY_THRESHOLD = 0.92
 
@@ -182,9 +184,9 @@ class AnswerMemory:
 
     def remember(self, label: str, kind: str, answer: str, source: str, job_link: str | None = None) -> RememberedAnswer:
         '''
-        Store an answer. An AI answer is `pending`; an answer the user gave is `approved`.
+        Store an answer. An answer the user gave is `approved`; anything else is `pending`.
         If an exact entry already exists for this question it is updated instead of
-        duplicated, except that an AI answer never replaces one the user approved.
+        duplicated, except that only the user can replace an approved answer.
         '''
         if kind not in KINDS: raise ValueError(f"Unknown control kind {kind!r}")
         if source not in SOURCES: raise ValueError(f"Unknown answer source {source!r}")
@@ -192,8 +194,8 @@ class AnswerMemory:
         key = normalise(label)
         existing = next((entry for entry in self.entries if entry.kind == kind and entry.normalised == key), None)
         if existing is not None:
-            if source == "ai" and existing.state == "approved":
-                return existing             # the user's word stands; the AI never overrides it
+            if source != "user" and existing.state == "approved":
+                return existing             # the user's word stands; nothing else overrides it
             existing.answer = answer
             existing.source = source
             existing.state = state
