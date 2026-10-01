@@ -50,6 +50,7 @@ from modules.answers_memory import AnswerMemory
 
 if use_AI:
     from modules.ai.connections import create_ai_client, extract_skills, answer_question, close_ai_client
+from modules.ai.profile import build_candidate_profile
 
 from typing import Literal
 
@@ -533,7 +534,7 @@ def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | N
     aiAnswer = ""
     if use_AI and aiClient:
         try:
-            aiAnswer = answer_question(aiClient, label_org, question_type=kind, job_description=job_description, user_information_all=user_information_all)
+            aiAnswer = answer_question(aiClient, label_org, question_type=kind, job_description=job_description, user_information_all=build_candidate_profile())
         except Exception as e:
             logger.warning("Failed to get AI answer! %s", e)
     if aiAnswer and isinstance(aiAnswer, str) and aiAnswer.strip():
@@ -545,25 +546,47 @@ def answer_from_memory_or_ai(label_org: str, kind: str, job_description: str | N
     return ""
 
 
-def remembered_option(label_org: str, kind: str, option_texts: list[str], job_link: str | None) -> int | None:
+# Dropdown placeholders are not answers; never offer them to the AI as options.
+option_placeholders = ("Select an option", "Select", "Please select", "Choose an option", "")
+
+
+def option_from_memory_or_ai(label_org: str, kind: str, option_texts: list[str], job_description: str | None, job_link: str | None) -> int | None:
     '''
-    Index of the option a remembered answer points at for an unrecognised `select` or
-    `radio` question, else `None`. The remembered text is matched to THIS form's options
-    (exact, then `match_answer_to_option`), so "Yes" works for "Yes/No" and "Yes, I am".
-    Sensitive questions are never looked up. Counts the use when it matches.
+    Index of the option to pick for a `select` or `radio` question that has no configured
+    answer, else `None`: the answer memory first (its text is matched to THIS form's options,
+    exact then `match_answer_to_option`, so "Yes" works for "Yes/No" and "Yes, I am"), then
+    the AI, which is shown the options and must name one verbatim; its pick is remembered as
+    pending. Sensitive questions get neither. Counts the use when something matches.
     '''
+    if is_sensitive_question(label_org):
+        return None
     remembered, approximate = lookup_unless_sensitive(label_org, kind)
-    if remembered is None:
-        return None
-    matched = next((i for i, option in enumerate(option_texts) if option == remembered.answer), None)
-    if matched is None:
-        matched = match_answer_to_option(remembered.answer, option_texts)
-    if matched is None:
+    if remembered is not None:
+        matched = next((i for i, option in enumerate(option_texts) if option == remembered.answer), None)
+        if matched is None:
+            matched = match_answer_to_option(remembered.answer, option_texts)
+        if matched is not None:
+            answers_memory.record_use(remembered, job_link)
+            print_lg(memory_hit_message(label_org, option_texts[matched], remembered, approximate))
+            return matched
         print_lg(f'Memory has "{remembered.answer}" for "{label_org}" but no option here matches it.')
+    if not (use_AI and aiClient):
         return None
+    choices = [option for option in option_texts if option not in option_placeholders]
+    if not choices:
+        return None
+    aiAnswer = ""
+    try:
+        aiAnswer = answer_question(aiClient, label_org, options=choices, question_type="single_select", job_description=job_description, user_information_all=build_candidate_profile())
+    except Exception as e:
+        logger.warning("Failed to get AI answer! %s", e)
+    if not (aiAnswer and isinstance(aiAnswer, str)) or aiAnswer not in option_texts:
+        if aiAnswer: print_lg(f'AI answered "{aiAnswer}" for "{label_org}", which is not one of the options. Leaving it unanswered.')
+        return None
+    print_lg(f'AI answered "{label_org}": "{aiAnswer}"')
+    remembered = answers_memory.remember(label_org, kind, aiAnswer, source="ai", job_link=job_link)
     answers_memory.record_use(remembered, job_link)
-    print_lg(memory_hit_message(label_org, option_texts[matched], remembered, approximate))
-    return matched
+    return option_texts.index(aiAnswer)
 
 
 def match_answer_to_option(answer: str | None, option_texts: list[str]) -> int | None:
@@ -817,7 +840,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                     if matched is None and not answer:
                         # No configured answer (unrecognised, or a setting left blank): a
                         # remembered answer may fit this form's options.
-                        matched = remembered_option(label_org, "select", optionsText, job_link)
+                        matched = option_from_memory_or_ai(label_org, "select", optionsText, job_description, job_link)
                     if matched is not None:
                         select.select_by_visible_text(optionsText[matched])
                         answer = optionsText[matched]
@@ -876,7 +899,7 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
                 else:
                     matched = match_answer_to_option(answer, option_texts)
                     if matched is None and not answer:
-                        matched = remembered_option(questionTitle, "radio", option_texts, job_link)
+                        matched = option_from_memory_or_ai(questionTitle, "radio", option_texts, job_description, job_link)
                     if matched is None:
                         # Never guess: `options[0]` clicked whatever LinkedIn rendered first
                         # and submitted it as a real answer - the radio twin of the

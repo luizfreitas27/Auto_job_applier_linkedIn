@@ -19,7 +19,7 @@ What the tool should say when an application asks you something. Open
 | `linkedin_headline` | Your headline, e.g. `"Full Stack Developer with Masters in Computer Science and 4+ years of experience"`, or `""` |
 | `linkedin_summary` | Your summary. Use `\n` for line breaks in a `"..."` string, or use `"""..."""` and write it across lines |
 | `cover_letter` | Your cover letter. Same formatting rules as the summary |
-| `user_information_all` | Free-form facts about you that the **AI** may use when drafting answers — name, years of experience, key skills, location, work authorization, anything an answer might need. Only used when AI is on (see [secrets](config-secrets.md)) |
+| `user_information_all` | Free-form **addition** to the candidate profile the **AI** is given. The tool already builds that profile from your settings (name, location, years of experience, salary, notice period, recent employer, headline, summary, work authorization, visa, citizenship); put here anything those miss, such as key skills. Phone, email and street address are never sent. Only used when AI is on (see [secrets](config-secrets.md)) |
 | `recent_employer` | Name of your most recent employer, e.g. `"Not Applicable"` |
 | `confidence_level` | `"1"` to `"10"` in quotes. Used for "on a scale of 1-10, how much experience do you have..." questions |
 
@@ -91,6 +91,9 @@ Each remembered answer records the question, the control kind, the answer, who g
 times it was used and the last job it was used on. Remembered answers are used immediately,
 including pending ones; reviewing them improves future applications, it does not block the
 current one.
+
+When AI is on, it also answers dropdowns and radio buttons it does not recognise: it is shown
+the real options and must name one of them exactly, otherwise the control is left alone.
 
 Dropdowns and radio buttons work the same way: the remembered answer is text, and the tool
 picks whichever option on the current form means the same thing, so a remembered "Yes" fits a
